@@ -100,6 +100,8 @@ Solution Planner::solve(std::string& additional_info)
 
   // Pre-process map: detect rooms
   detect_rooms(ins->G.width, ins->G.height);
+  // Debug cell_to_room
+  
 
   // Solution = sequence of configs (one per timestep)
   std::vector<Config> solution;
@@ -138,20 +140,26 @@ Solution Planner::solve(std::string& additional_info)
                        (uint)solution.size(),
                        get_h_value(C_now));
 
+    // ROOM CAPACITY CHECK before sorting
+    // Reduce priority of agents approaching full rooms
+    // so inside agents (exiting) go first
+    for (uint kk = 0; kk < N; ++kk) {
+      if (approaching_full_room(A[kk])) {
+        H->priorities[kk] = 0.0001f;
+      }
+    }
+    // Re-sort with updated priorities
+    std::iota(H->order.begin(), H->order.end(), 0);
+    std::sort(H->order.begin(), H->order.end(),
+              [&](uint i, uint j) {
+                return H->priorities[i] > H->priorities[j];
+              });
+
+
     // ── PIBT: process agents in priority order ─────────────────
     for (auto k : H->order) {
       auto* a = A[k];
       if (a->v_next != nullptr) continue;  // already resolved
-
-      // ROOM CAPACITY CHECK before inheritance chain
-      if (approaching_full_room(a)) {
-        // Room full → agent waits at entrance
-        static int room_waits = 0;
-        room_waits++;
-        occupied_next[a->v_now->id] = a;
-        a->v_next = a->v_now;
-        continue;
-      }
 
       // Normal PIBT conflict resolution
       funcPIBT(a, a, H);
@@ -169,6 +177,7 @@ Solution Planner::solve(std::string& additional_info)
       solver_info(1, "deadlock at step ", loop_cnt);
       break;
     }
+
 
     solution.push_back(C_new);
 
@@ -351,7 +360,6 @@ void Planner::detect_rooms(int width, int height)
 
   // Initialize cell_to_room with -1 (no room)
   cell_to_room.assign(V_size, -1);
-  std::cout << "[DEBUG] cell_to_room assigned\n";
 
   // For each row: count walls
   std::vector<bool> wall_row(H, false);
@@ -535,6 +543,43 @@ bool Planner::approaching_full_room(Agent* ai)
 
   int current_room = cell_to_room[ai->v_now->id];
 
+  // Only block agents that are OUTSIDE the room
+  // (not at entrance, not inside)
+  // If agent is already at entrance cell → let PIBT handle it
+  if (current_room >= 0) return false;  // already inside a room
+
+  // Check if agent is AT an entrance cell
+  // Entrance cells are in cell_to_room as part of the room
+  // but the agent standing there would block the exit!
+  // So only block agents who are in the OPEN CORRIDOR
+  // i.e. none of their neighbours is an entrance
+  bool next_to_entrance = false;
+  for (auto* nb : ai->v_now->neighbor) {
+    // Is this neighbour an entrance cell?
+    for (auto& room : rooms) {
+      for (int e : room.entrances) {
+        if ((int)nb->id == e) {
+          next_to_entrance = true;
+          break;
+        }
+      }
+    }
+  }
+  // Only block if agent is next to entrance (in corridor)
+  // not if already at entrance
+  bool at_entrance = false;
+  for (auto& room : rooms) {
+    for (int e : room.entrances) {
+      if ((int)ai->v_now->id == e) {
+        at_entrance = true;
+        break;
+      }
+    }
+  }
+  if (at_entrance) return false; // already at entrance, let PIBT decide
+
+  }
+
   // Check each neighbour the agent might move to
   for (auto* nb : ai->v_now->neighbor) {
     int rid = cell_to_room[nb->id];
@@ -559,15 +604,6 @@ std::pair<bool, int> Planner::funcPIBT(Agent* ai, Agent* root, HNode* H)
   const auto i = ai->id;
   const auto K = ai->v_now->neighbor.size();
   ai->root_agent = root->id;  // set root agent
-
-  // CAPACITY CHECK: soft version
-  // Don't freeze agent, just lower priority
-  // so it prefers NOT entering full rooms
-  if (ai == root && approaching_full_room(ai)) {
-    // Reduce priority but don't freeze
-    // Agent can still enter if it must
-    H->priorities[i] = H->priorities[i] * 0.1f;
-  }
 
   // get candidates for next locations
   for (auto k = 0; k < K; ++k) {
