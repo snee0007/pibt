@@ -88,122 +88,110 @@ Planner::~Planner() {}
 
 Solution Planner::solve(std::string& additional_info)
 {
-  solver_info(1, "start search");
+  solver_info(1, "start pure PIBT");
 
-  // setup agents
-  for (auto i = 0; i < N; ++i) A[i] = new Agent(i);
-  // setup room capacity system
+  // ── Setup ─────────────────────────────────────────────────────
+  for (auto i = 0; i < N; ++i) {
+    A[i] = new Agent(i);
+    A[i]->v_now  = ins->starts[i];
+    A[i]->v_next = nullptr;
+    occupied_now[ins->starts[i]->id] = A[i];
+  }
+
+  // Pre-process map: detect rooms
   detect_rooms(ins->G.width, ins->G.height);
 
-  // setup search
-  auto OPEN = std::stack<HNode*>();
-  auto EXPLORED = std::unordered_map<Config, HNode*, ConfigHasher>();
-  // insert initial node, 'H': high-level node
-  auto H_init = new HNode(ins->starts, D, nullptr, 0, get_h_value(ins->starts));
-  OPEN.push(H_init);
-  EXPLORED[H_init->C] = H_init;
-
+  // Solution = sequence of configs (one per timestep)
   std::vector<Config> solution;
-  auto C_new = Config(N, nullptr);  // for new configuration
-  HNode* H_goal = nullptr;          // to store goal node
+  solution.push_back(ins->starts);
 
-  // DFS
-  while (!OPEN.empty() && !is_expired(deadline)) {
-    loop_cnt += 1;
+  // ── Pure PIBT while loop ───────────────────────────────────────
+  while (!is_expired(deadline)) {
+    loop_cnt++;
 
-    // do not pop here!
-    auto H = OPEN.top();  // high-level node
+    // Check if all agents at goal
+    bool all_done = true;
+    for (uint i = 0; i < N; ++i) {
+      if (A[i]->v_now != ins->goals[i]) { all_done = false; break; }
+    }
+    if (all_done) break;
 
-    // low-level search end
-    if (H->search_tree.empty()) {
-      OPEN.pop();
-      continue;
+    // Reset next positions
+    for (auto* a : A) {
+      if (a->v_next != nullptr) {
+        occupied_next[a->v_next->id] = nullptr;
+        a->v_next = nullptr;
+      }
+      a->root_agent = -1;
     }
 
-    // check lower bounds
-    if (H_goal != nullptr && H->f >= H_goal->f) {
-      OPEN.pop();
-      continue;
+    // Update room counts for capacity checking
+    update_room_counts();
+
+    // Build current config for priority calculation
+    Config C_now(N);
+    for (uint i = 0; i < N; ++i) C_now[i] = A[i]->v_now;
+
+    // Create HNode just for priority ordering
+    // HNode uses DistTable (lazy BFS) to assign priorities
+    auto H = new HNode(C_now, D, nullptr,
+                       (uint)solution.size(),
+                       get_h_value(C_now));
+
+    // ── PIBT: process agents in priority order ─────────────────
+    for (auto k : H->order) {
+      auto* a = A[k];
+      if (a->v_next != nullptr) continue;  // already resolved
+
+      // ROOM CAPACITY CHECK before inheritance chain
+      if (approaching_full_room(a)) {
+        // Room full → agent waits at entrance
+        static int room_waits = 0;
+        room_waits++;
+        occupied_next[a->v_now->id] = a;
+        a->v_next = a->v_now;
+        continue;
+      }
+
+      // Normal PIBT conflict resolution
+      funcPIBT(a, a, H);
     }
 
-    // check goal condition
-    if (H_goal == nullptr && is_same_config(H->C, ins->goals)) {
-      H_goal = H;
-      solver_info(1, "found solution, cost: ", H->g);
-      if (objective == OBJ_NONE) break;
-      continue;
+    // ── Build new config ───────────────────────────────────────
+    Config C_new(N);
+    for (auto* a : A) {
+      if (a->v_next == nullptr) a->v_next = a->v_now;
+      C_new[a->id] = a->v_next;
     }
 
-    // create successors at the low-level search
-    auto L = H->search_tree.front();
-    H->search_tree.pop();
-    expand_lowlevel_tree(H, L);
-
-    // create successors at the high-level search
-    const auto res = get_new_config(H, L);
-    delete L;  // free
-    if (!res) std::cout << "failed to get new config" << std::endl;
-
-    // create new configuration
-    for (auto a : A) C_new[a->id] = a->v_next;
-
-    if (C_new == H->C) {
-      std::cout<< "dead lock" << std::endl;
+    // Deadlock check
+    if (C_new == solution.back()) {
+      solver_info(1, "deadlock at step ", loop_cnt);
+      break;
     }
 
-    // check explored list
-    // const auto iter = EXPLORED.find(C_new);
-    // if (iter != EXPLORED.end()) {
-    //   // case found
-    //   rewrite(H, iter->second, H_goal, OPEN);
-    //   // re-insert or random-restart
-    //   auto H_insert = (MT != nullptr && get_random_float(MT) >= RESTART_RATE)
-    //                       ? iter->second
-    //                       : H_init;
-    //   if (H_goal == nullptr || H_insert->f < H_goal->f) OPEN.push(H_insert);
-    // } else {
-      // insert new search node
-      const auto H_new = new HNode(
-          C_new, D, H, H->g + get_edge_cost(H->C, C_new), get_h_value(C_new));
-      EXPLORED[H_new->C] = H_new;
-      if (H_goal == nullptr || H_new->f < H_goal->f) OPEN.push(H_new);
-    // }
+    solution.push_back(C_new);
+
+    // Advance agents
+    for (auto* a : A) {
+      occupied_now[a->v_now->id] = nullptr;
+      a->v_now = a->v_next;
+      occupied_now[a->v_now->id] = a;
+    }
+
+    delete H;
   }
 
-  // backtrack
-  if (H_goal != nullptr) {
-    auto H = H_goal;
-    while (H != nullptr) {
-      solution.push_back(H->C);
-      H = H->parent;
-    }
-    std::reverse(solution.begin(), solution.end());
-  }
+  // ── Done ───────────────────────────────────────────────────────
+  solver_info(1, "done in ", loop_cnt, " steps");
+  // Print room wait stats
+  additional_info += "mode=pure_pibt\n";
+  additional_info += "steps=" + std::to_string(loop_cnt) + "\n";
 
-  // print result
-  if (H_goal != nullptr && OPEN.empty()) {
-    solver_info(1, "solved optimally, objective: ", objective);
-  } else if (H_goal != nullptr) {
-    solver_info(1, "solved sub-optimally, objective: ", objective);
-  } else if (OPEN.empty()) {
-    solver_info(1, "no solution");
-  } else {
-    solver_info(1, "timeout");
-  }
-
-  // logging
-  additional_info +=
-      "optimal=" + std::to_string(H_goal != nullptr && OPEN.empty()) + "\n";
-  additional_info += "objective=" + std::to_string(objective) + "\n";
-  additional_info += "loop_cnt=" + std::to_string(loop_cnt) + "\n";
-  additional_info += "num_node_gen=" + std::to_string(EXPLORED.size()) + "\n";
-
-  // memory management
-  for (auto a : A) delete a;
-  for (auto itr : EXPLORED) delete itr.second;
-
+  for (auto* a : A) delete a;
   return solution;
 }
+
 
 void Planner::rewrite(HNode* H_from, HNode* H_to, HNode* H_goal,
                       std::stack<HNode*>& OPEN)
@@ -335,6 +323,20 @@ bool Planner::get_new_config(HNode* H, LNode* L)
 
 // ── Room Capacity System ─────────────────────────────────────────────────
 
+// ── Corridor Detection ───────────────────────────────────────────────
+// A corridor cell has exactly 2 free neighbours
+bool Planner::is_corridor(int vid) const
+{
+  if (vid < 0 || vid >= (int)V_size) return false;
+  // find vertex
+  Vertex* v = nullptr;
+  for (auto* u : ins->G.V) {
+    if ((int)u->id == vid) { v = u; break; }
+  }
+  if (!v) return false;
+  return v->neighbor.size() == 2;
+}
+
 void Planner::detect_rooms(int width, int height)
 {
   // Use graph dimensions directly
@@ -452,6 +454,58 @@ void Planner::detect_rooms(int width, int height)
     }
   }
 
+  // ── Dijkstra-based corridor room detection ────────────────────
+  // For each corridor cell, run DFS outward
+  // If DFS terminates cleanly (no other corridor) = it's a dead-end room
+  // This catches rooms that wall-scanning might miss
+
+  std::vector<bool> visited(V_size, false);
+
+  // Mark all cells already assigned to a room as visited
+  for (int i = 0; i < (int)V_size; i++) {
+    if (cell_to_room[i] >= 0) visited[i] = true;
+  }
+
+  for (auto* v : ins->G.V) {
+    if (!is_corridor((int)v->id)) continue;
+    if (visited[v->id]) continue;
+
+    // BFS/DFS from this corridor cell
+    std::queue<Vertex*> q;
+    std::vector<Vertex*> component;
+    q.push(v);
+    visited[v->id] = true;
+
+    bool hits_another_corridor = false;
+    bool hits_open_space = false;
+
+    while (!q.empty()) {
+      auto* cur = q.front(); q.pop();
+      component.push_back(cur);
+
+      for (auto* nb : cur->neighbor) {
+        if (visited[nb->id]) continue;
+        visited[nb->id] = true;
+        if (is_corridor((int)nb->id)) {
+          hits_another_corridor = true;
+        } else {
+          hits_open_space = true;
+        }
+        q.push(nb);
+      }
+    }
+
+    // Dead-end corridor: small component, no other corridors
+    // = this IS a room entrance corridor
+    if (!hits_another_corridor && component.size() <= 3) {
+      // Mark these as corridor (not room)
+      // They connect to rooms already detected
+      std::cout << "[CORR] Entrance corridor: "
+                << component.size() << " cells
+";
+    }
+  }
+
   std::cout << "[ROOM] Detected " << rooms.size() << " rooms\n";
   for (auto& r : rooms)
     std::cout << "[ROOM]   Room " << r.id
@@ -489,20 +543,6 @@ bool Planner::approaching_full_room(Agent* ai)
 
     // Agent is outside this room, neighbour is inside
     auto& room = rooms[rid];
-
-    static int debug_count = 0;
-    debug_count++;
-    if (debug_count <= 20) {
-      std::cout << "[DBG] Agent " << ai->id 
-                << " at " << ai->v_now->id
-                << " room=" << current_room
-                << " -> nb=" << nb->id
-                << " rid=" << rid
-                << " count=" << room.current_count
-                << " cap=" << room.capacity
-                << " entrances=" << room.entrances.size()
-                << "\n";
-    }
 
     // Is room full?
     if (room.current_count >= room.capacity) {

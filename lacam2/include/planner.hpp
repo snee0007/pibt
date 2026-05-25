@@ -118,6 +118,7 @@ struct Planner {
   void detect_rooms(int width, int height);
   bool approaching_full_room(Agent* ai);
   void update_room_counts();
+  bool is_corridor(int vid) const;
 
   // utilities
   template <typename... Body>
