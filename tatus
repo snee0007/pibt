@@ -1,0 +1,176 @@
+[1mdiff --git a/lacam2/include/planner.hpp b/lacam2/include/planner.hpp[m
+[1mindex 408711e..a867d28 100644[m
+[1m--- a/lacam2/include/planner.hpp[m
+[1m+++ b/lacam2/include/planner.hpp[m
+[36m@@ -13,6 +13,16 @@[m
+ enum Objective { OBJ_NONE, OBJ_MAKESPAN, OBJ_SUM_OF_LOSS };[m
+ std::ostream& operator<<(std::ostream& os, const Objective objective);[m
+ [m
+[32m+[m[32m// Room capacity tracking[m
+[32m+[m[32mstruct RoomInfo {[m
+[32m+[m[32m  int id;[m
+[32m+[m[32m  std::vector<int> cells;      // all cell indices in this room[m
+[32m+[m[32m  std::vector<int> entrances;  // entrance cell indices[m
+[32m+[m[32m  int capacity;                // max agents allowed[m
+[32m+[m[32m  int current_count;           // agents inside right now[m
+[32m+[m[32m  RoomInfo(int _id) : id(_id), capacity(0), current_count(0) {}[m
+[32m+[m[32m};[m
+[32m+[m
+ // PIBT agent[m
+ struct Agent {[m
+   const uint id;[m
+[36m@@ -102,6 +112,13 @@[m [mstruct Planner {[m
+                         Vertex* v_pusher_origin, Vertex* v_puller_origin);[m
+   bool is_swap_possible(Vertex* v_pusher_origin, Vertex* v_puller_origin);[m
+ [m
+[32m+[m[32m  // Room capacity system[m
+[32m+[m[32m  std::vector<RoomInfo> rooms;[m
+[32m+[m[32m  std::vector<int> cell_to_room;  // maps cell id → room id (-1 if wall/corridor)[m
+[32m+[m[32m  void detect_rooms(int width, int height);[m
+[32m+[m[32m  bool approaching_full_room(Agent* ai);[m
+[32m+[m[32m  void update_room_counts();[m
+[32m+[m
+   // utilities[m
+   template <typename... Body>[m
+   void solver_info(const int level, Body&&... body)[m
+[1mdiff --git a/lacam2/src/planner.cpp b/lacam2/src/planner.cpp[m
+[1mindex 890fab9..24eef47 100644[m
+[1m--- a/lacam2/src/planner.cpp[m
+[1m+++ b/lacam2/src/planner.cpp[m
+[36m@@ -92,6 +92,8 @@[m [mSolution Planner::solve(std::string& additional_info)[m
+ [m
+   // setup agents[m
+   for (auto i = 0; i < N; ++i) A[i] = new Agent(i);[m
+[32m+[m[32m  // setup room capacity system[m
+[32m+[m[32m  detect_rooms(ins->G.width, ins->G.height);[m
+ [m
+   // setup search[m
+   auto OPEN = std::stack<HNode*>();[m
+[36m@@ -310,6 +312,9 @@[m [mbool Planner::get_new_config(HNode* H, LNode* L)[m
+     occupied_next[l] = A[i];[m
+   }[m
+ [m
+[32m+[m[32m  // update room counts before PIBT runs[m
+[32m+[m[32m  update_room_counts();[m
+[32m+[m
+   // perform PIBT[m
+   for (auto k : H->order) {[m
+     auto a = A[k];[m
+[36m@@ -328,12 +333,202 @@[m [mbool Planner::get_new_config(HNode* H, LNode* L)[m
+   return true;[m
+ }[m
+ [m
+[32m+[m[32m// ── Room Capacity System ─────────────────────────────────────────────────[m
+[32m+[m
+[32m+[m[32mvoid Planner::detect_rooms(int width, int height)[m
+[32m+[m[32m{[m
+[32m+[m[32m  // Use graph dimensions directly[m
+[32m+[m[32m  const int W = ins->G.width;[m
+[32m+[m[32m  const int H = ins->G.height;[m
+[32m+[m[32m  const int total = W * H;[m
+[32m+[m
+[32m+[m[32m  std::cout << "[DEBUG] W=" << W << " H=" << H[m
+[32m+[m[32m            << " total=" << total[m
+[32m+[m[32m            << " V_size=" << V_size[m
+[32m+[m[32m            << " U.size=" << ins->G.U.size() << "\n";[m
+[32m+[m
+[32m+[m[32m  // Initialize cell_to_room with -1 (no room)[m
+[32m+[m[32m  cell_to_room.assign(V_size, -1);[m
+[32m+[m[32m  std::cout << "[DEBUG] cell_to_room assigned\n";[m
+[32m+[m
+[32m+[m[32m  // For each row: count walls[m
+[32m+[m[32m  std::vector<bool> wall_row(H, false);[m
+[32m+[m[32m  std::vector<bool> wall_col(W, false);[m
+[32m+[m
+[32m+[m[32m  for (int r = 0; r < H; ++r) {[m
+[32m+[m[32m    int wall_count = 0;[m
+[32m+[m[32m    for (int c = 0; c < W; ++c) {[m
+[32m+[m[32m      int idx = r * W + c;[m
+[32m+[m[32m      if (idx >= total || ins->G.U[idx] == nullptr) wall_count++;[m
+[32m+[m[32m    }[m
+[32m+[m[32m    if ((float)wall_count / W > 0.5f) wall_row[r] = true;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  for (int c = 0; c < W; ++c) {[m
+[32m+[m[32m    int wall_count = 0;[m
+[32m+[m[32m    for (int r = 0; r < H; ++r) {[m
+[32m+[m[32m      int idx = r * W + c;[m
+[32m+[m[32m      if (idx >= total || ins->G.U[idx] == nullptr) wall_count++;[m
+[32m+[m[32m    }[m
+[32m+[m[32m    if ((float)wall_count / H > 0.5f) wall_col[c] = true;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  std::vector<int> row_bounds, col_bounds;[m
+[32m+[m[32m  for (int r = 0; r < H; ++r) if (wall_row[r]) row_bounds.push_back(r);[m
+[32m+[m[32m  for (int c = 0; c < W; ++c) if (wall_col[c]) col_bounds.push_back(c);[m
+[32m+[m
+[32m+[m[32m  if (row_bounds.size() < 2 || col_bounds.size() < 2) {[m
+[32m+[m[32m    std::cout << "[ROOM] No room structure detected\n";[m
+[32m+[m[32m    return;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  int room_id = 0;[m
+[32m+[m[32m  for (int ri = 0; ri + 1 < (int)row_bounds.size(); ++ri) {[m
+[32m+[m[32m    for (int ci = 0; ci + 1 < (int)col_bounds.size(); ++ci) {[m
+[32m+[m[32m      int r0 = row_bounds[ri]     + 1;[m
+[32m+[m[32m      int r1 = row_bounds[ri + 1] - 1;[m
+[32m+[m[32m      int c0 = col_bounds[ci]     + 1;[m
+[32m+[m[32m      int c1 = col_bounds[ci + 1] - 1;[m
+[32m+[m
+[32m+[m[32m      if (r0 > r1 || c0 > c1) continue;[m
+[32m+[m
+[32m+[m[32m      RoomInfo room(room_id);[m
+[32m+[m
+[32m+[m[32m      // Interior cells[m
+[32m+[m[32m      for (int r = r0; r <= r1; ++r) {[m
+[32m+[m[32m        for (int c = c0; c <= c1; ++c) {[m
+[32m+[m[32m          int idx = r * W + c;[m
+[32m+[m[32m          if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {[m
+[32m+[m[32m            int vid = ins->G.U[idx]->id;[m
+[32m+[m[32m            if (vid < (int)V_size) {[m
+[32m+[m[32m              room.cells.push_back(vid);[m
+[32m+[m[32m              cell_to_room[vid] = room_id;[m
+[32m+[m[32m            }[m
+[32m+[m[32m          }[m
+[32m+[m[32m        }[m
+[32m+[m[32m      }[m
+[32m+[m
+[32m+[m[32m      if (room.cells.empty()) continue;[m
+[32m+[m
+[32m+[m[32m      // Entrance cells: gaps in boundary walls adjacent to this room[m
+[32m+[m[32m      // Top boundary row[m
+[32m+[m[32m      for (int c = c0; c <= c1; ++c) {[m
+[32m+[m[32m        int idx = row_bounds[ri] * W + c;[m
+[32m+[m[32m        if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {[m
+[32m+[m[32m          int vid = ins->G.U[idx]->id;[m
+[32m+[m[32m          if (vid < (int)V_size) room.entrances.push_back(vid);[m
+[32m+[m[32m        }[m
+[32m+[m[32m      }[m
+[32m+[m[32m      // Bottom boundary row[m
+[32m+[m[32m      for (int c = c0; c <= c1; ++c) {[m
+[32m+[m[32m        int idx = row_bounds[ri + 1] * W + c;[m
+[32m+[m[32m        if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {[m
+[32m+[m[32m          int vid = ins->G.U[idx]->id;[m
+[32m+[m[32m          if (vid < (int)V_size) room.entrances.push_back(vid);[m
+[32m+[m[32m        }[m
+[32m+[m[32m      }[m
+[32m+[m[32m      // Left boundary col[m
+[32m+[m[32m      for (int r = r0; r <= r1; ++r) {[m
+[32m+[m[32m        int idx = r * W + col_bounds[ci];[m
+[32m+[m[32m        if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {[m
+[32m+[m[32m          int vid = ins->G.U[idx]->id;[m
+[32m+[m[32m          if (vid < (int)V_size) room.entrances.push_back(vid);[m
+[32m+[m[32m        }[m
+[32m+[m[32m      }[m
+[32m+[m[32m      // Right boundary col[m
+[32m+[m[32m      for (int r = r0; r <= r1; ++r) {[m
+[32m+[m[32m        int idx = r * W + col_bounds[ci + 1];[m
+[32m+[m[32m        if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {[m
+[32m+[m[32m          int vid = ins->G.U[idx]->id;[m
+[32m+[m[32m          if (vid < (int)V_size) room.entrances.push_back(vid);[m
+[32m+[m[32m        }[m
+[32m+[m[32m      }[m
+[32m+[m
+[32m+[m[32m      // capacity = half room size (realistic threshold)[m
+[32m+[m[32m      room.capacity = std::max(1, (int)room.cells.size() / 2);[m
+[32m+
