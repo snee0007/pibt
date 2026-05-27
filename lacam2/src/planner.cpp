@@ -1,4 +1,5 @@
 #include "../include/planner.hpp"
+#include <set>
 
 LNode::LNode(LNode* parent, uint i, Vertex* v)
     : who(), where(), depth(parent == nullptr ? 0 : parent->depth + 1)
@@ -13,33 +14,19 @@ LNode::LNode(LNode* parent, uint i, Vertex* v)
 
 uint HNode::HNODE_CNT = 0;
 
-// for high-level
 HNode::HNode(const Config& _C, DistTable& D, HNode* _parent, const uint _g,
              const uint _h)
-    : C(_C),
-      parent(_parent),
-      neighbor(),
-      g(_g),
-      h(_h),
-      f(g + h),
-      priorities(C.size()),
-      order(C.size(), 0),
+    : C(_C), parent(_parent), neighbor(), g(_g), h(_h), f(g + h),
+      priorities(C.size()), order(C.size(), 0),
       search_tree(std::queue<LNode*>())
 {
   ++HNODE_CNT;
-
   search_tree.push(new LNode());
   const auto N = C.size();
-
-  // update neighbor
   if (parent != nullptr) parent->neighbor.insert(this);
-
-  // set priorities
   if (parent == nullptr) {
-    // initialize
     for (uint i = 0; i < N; ++i) priorities[i] = (float)D.get(i, C[i]) / N;
   } else {
-    // dynamic priorities, akin to PIBT
     for (size_t i = 0; i < N; ++i) {
       if (D.get(i, C[i]) != 0) {
         priorities[i] = parent->priorities[i] + 1;
@@ -48,8 +35,6 @@ HNode::HNode(const Config& _C, DistTable& D, HNode* _parent, const uint _g,
       }
     }
   }
-
-  // set order
   std::iota(order.begin(), order.end(), 0);
   std::sort(order.begin(), order.end(),
             [&](uint i, uint j) { return priorities[i] > priorities[j]; });
@@ -66,23 +51,12 @@ HNode::~HNode()
 Planner::Planner(const Instance* _ins, const Deadline* _deadline,
                  std::mt19937* _MT, const int _verbose,
                  const Objective _objective, const float _restart_rate)
-    : ins(_ins),
-      deadline(_deadline),
-      MT(_MT),
-      verbose(_verbose),
-      objective(_objective),
-      RESTART_RATE(_restart_rate),
-      N(ins->N),
-      V_size(ins->G.size()),
-      D(DistTable(ins)),
-      loop_cnt(0),
-      C_next(N),
-      tie_breakers(V_size, 0),
-      A(N, nullptr),
-      occupied_now(V_size, nullptr),
-      occupied_next(V_size, nullptr)
-{
-}
+    : ins(_ins), deadline(_deadline), MT(_MT), verbose(_verbose),
+      objective(_objective), RESTART_RATE(_restart_rate),
+      N(ins->N), V_size(ins->G.size()), D(DistTable(ins)), loop_cnt(0),
+      C_next(N), tie_breakers(V_size, 0), A(N, nullptr),
+      occupied_now(V_size, nullptr), occupied_next(V_size, nullptr)
+{}
 
 Planner::~Planner() {}
 
@@ -90,7 +64,7 @@ Solution Planner::solve(std::string& additional_info)
 {
   solver_info(1, "start pure PIBT");
 
-  // ── Setup ─────────────────────────────────────────────────────
+  // Setup agents
   for (auto i = 0; i < N; ++i) {
     A[i] = new Agent(i);
     A[i]->v_now  = ins->starts[i];
@@ -98,16 +72,12 @@ Solution Planner::solve(std::string& additional_info)
     occupied_now[ins->starts[i]->id] = A[i];
   }
 
-  // Pre-process map: detect rooms
+  // Detect rooms and corridors
   detect_rooms(ins->G.width, ins->G.height);
-  // Debug cell_to_room
-  
 
-  // Solution = sequence of configs (one per timestep)
   std::vector<Config> solution;
   solution.push_back(ins->starts);
 
-  // ── Pure PIBT while loop ───────────────────────────────────────
   while (!is_expired(deadline)) {
     loop_cnt++;
 
@@ -127,22 +97,16 @@ Solution Planner::solve(std::string& additional_info)
       a->root_agent = -1;
     }
 
-    // Update room counts for capacity checking
     update_room_counts();
 
-    // Build current config for priority calculation
     Config C_now(N);
     for (uint i = 0; i < N; ++i) C_now[i] = A[i]->v_now;
 
-    // Create HNode just for priority ordering
-    // HNode uses DistTable (lazy BFS) to assign priorities
     auto H = new HNode(C_now, D, nullptr,
                        (uint)solution.size(),
                        get_h_value(C_now));
 
-    // ROOM CAPACITY CHECK before sorting
-    // Reduce priority of agents approaching full rooms
-    // so inside agents (exiting) go first
+    // Room capacity check: lower priority of agents entering full rooms
     for (uint kk = 0; kk < N; ++kk) {
       if (approaching_full_room(A[kk])) {
         H->priorities[kk] = 0.0001f;
@@ -155,33 +119,26 @@ Solution Planner::solve(std::string& additional_info)
                 return H->priorities[i] > H->priorities[j];
               });
 
-
-    // ── PIBT: process agents in priority order ─────────────────
+    // PIBT execution
     for (auto k : H->order) {
       auto* a = A[k];
-      if (a->v_next != nullptr) continue;  // already resolved
-
-      // Normal PIBT conflict resolution
+      if (a->v_next != nullptr) continue;
       funcPIBT(a, a, H);
     }
 
-    // ── Build new config ───────────────────────────────────────
     Config C_new(N);
     for (auto* a : A) {
       if (a->v_next == nullptr) a->v_next = a->v_now;
       C_new[a->id] = a->v_next;
     }
 
-    // Deadlock check
     if (C_new == solution.back()) {
       solver_info(1, "deadlock at step ", loop_cnt);
       break;
     }
 
-
     solution.push_back(C_new);
 
-    // Advance agents
     for (auto* a : A) {
       occupied_now[a->v_now->id] = nullptr;
       a->v_now = a->v_next;
@@ -191,28 +148,20 @@ Solution Planner::solve(std::string& additional_info)
     delete H;
   }
 
-  // ── Done ───────────────────────────────────────────────────────
   solver_info(1, "done in ", loop_cnt, " steps");
-  // Print room wait stats
   additional_info += "mode=pure_pibt\n";
   additional_info += "steps=" + std::to_string(loop_cnt) + "\n";
-
   for (auto* a : A) delete a;
   return solution;
 }
 
-
 void Planner::rewrite(HNode* H_from, HNode* H_to, HNode* H_goal,
                       std::stack<HNode*>& OPEN)
 {
-  // update neighbors
   H_from->neighbor.insert(H_to);
-
-  // Dijkstra update
-  std::queue<HNode*> Q({H_from});  // queue is sufficient
+  std::queue<HNode*> Q({H_from});
   while (!Q.empty()) {
-    auto n_from = Q.front();
-    Q.pop();
+    auto n_from = Q.front(); Q.pop();
     for (auto n_to : n_from->neighbor) {
       auto g_val = n_from->g + get_edge_cost(n_from->C, n_to->C);
       if (g_val < n_to->g) {
@@ -233,14 +182,10 @@ uint Planner::get_edge_cost(const Config& C1, const Config& C2)
   if (objective == OBJ_SUM_OF_LOSS) {
     uint cost = 0;
     for (uint i = 0; i < N; ++i) {
-      if (C1[i] != ins->goals[i] || C2[i] != ins->goals[i]) {
-        cost += 1;
-      }
+      if (C1[i] != ins->goals[i] || C2[i] != ins->goals[i]) cost += 1;
     }
     return cost;
   }
-
-  // default: makespan
   return 1;
 }
 
@@ -266,78 +211,55 @@ void Planner::expand_lowlevel_tree(HNode* H, LNode* L)
   const auto i = H->order[L->depth];
   auto C = H->C[i]->neighbor;
   C.push_back(H->C[i]);
-  // randomize
   if (MT != nullptr) std::shuffle(C.begin(), C.end(), *MT);
-  // insert
   for (auto v : C) H->search_tree.push(new LNode(L, i, v));
 }
 
 bool Planner::get_new_config(HNode* H, LNode* L)
 {
-  // setup cache
   for (auto a : A) {
-    // clear previous cache
-    if (a->v_now != nullptr && occupied_now[a->v_now->id] == a) {
+    if (a->v_now != nullptr && occupied_now[a->v_now->id] == a)
       occupied_now[a->v_now->id] = nullptr;
-    }
     if (a->v_next != nullptr) {
       occupied_next[a->v_next->id] = nullptr;
       a->v_next = nullptr;
     }
-    a->root_agent = -1;  // reset root agent
-
-    // set occupied now
+    a->root_agent = -1;
     a->v_now = H->C[a->id];
     occupied_now[a->v_now->id] = a;
   }
-
-  // add constraints
   for (uint k = 0; k < L->depth; ++k) {
-    const auto i = L->who[k];        // agent
-    const auto l = L->where[k]->id;  // loc
-
-    // check vertex collision
+    const auto i = L->who[k];
+    const auto l = L->where[k]->id;
     if (occupied_next[l] != nullptr) return false;
-    // check swap collision
     auto l_pre = H->C[i]->id;
     if (occupied_next[l_pre] != nullptr && occupied_now[l] != nullptr &&
         occupied_next[l_pre]->id == occupied_now[l]->id)
       return false;
-
-    // set occupied_next
     A[i]->v_next = L->where[k];
     occupied_next[l] = A[i];
   }
-
-  // update room counts before PIBT runs
   update_room_counts();
-
-  // perform PIBT
   for (auto k : H->order) {
     auto a = A[k];
-    if (a->v_next == nullptr){ 
+    if (a->v_next == nullptr) {
       auto result = funcPIBT(a, a, H);
       if (result.second != INT_MAX && result.second != -1) {
-        // std::cout<< "swap: " << a->id <<":"<< H->priorities[a->id] << " with " << result.second <<":"<< H->priorities[result.second] << std::endl;
-        // priority swap
         auto temp = H->priorities[k];
-        H->priorities[k] =  H->priorities[result.second];  
+        H->priorities[k] = H->priorities[result.second];
         H->priorities[result.second] = temp;
       }
-      if (!result.first) return false;  // planning failure
+      if (!result.first) return false;
     }
   }
   return true;
 }
 
-// ── Room Capacity System ─────────────────────────────────────────────────
+// ── Room + Corridor Detection ─────────────────────────────────────────
 
-// ── Corridor Detection ───────────────────────────────────────────────
-// A corridor cell has exactly 2 free neighbours
 bool Planner::is_corridor(int vid) const
 {
   if (vid < 0 || vid >= (int)V_size) return false;
-  // find vertex
   Vertex* v = nullptr;
   for (auto* u : ins->G.V) {
     if ((int)u->id == vid) { v = u; break; }
@@ -348,166 +270,124 @@ bool Planner::is_corridor(int vid) const
 
 void Planner::detect_rooms(int width, int height)
 {
-  // Use graph dimensions directly
   const int W = ins->G.width;
   const int H = ins->G.height;
   const int total = W * H;
 
-  // Initialize cell_to_room with -1 (no room)
   cell_to_room.assign(V_size, -1);
 
-  // For each row: count walls
+  // Phase 1: Wall-scanning room detection
   std::vector<bool> wall_row(H, false);
   std::vector<bool> wall_col(W, false);
 
   for (int r = 0; r < H; ++r) {
-    int wall_count = 0;
+    int wc = 0;
     for (int c = 0; c < W; ++c) {
       int idx = r * W + c;
-      if (idx >= total || ins->G.U[idx] == nullptr) wall_count++;
+      if (idx >= total || ins->G.U[idx] == nullptr) wc++;
     }
-    if ((float)wall_count / W > 0.5f) wall_row[r] = true;
+    if ((float)wc / W > 0.5f) wall_row[r] = true;
   }
-
   for (int c = 0; c < W; ++c) {
-    int wall_count = 0;
+    int wc = 0;
     for (int r = 0; r < H; ++r) {
       int idx = r * W + c;
-      if (idx >= total || ins->G.U[idx] == nullptr) wall_count++;
+      if (idx >= total || ins->G.U[idx] == nullptr) wc++;
     }
-    if ((float)wall_count / H > 0.5f) wall_col[c] = true;
+    if ((float)wc / H > 0.5f) wall_col[c] = true;
   }
 
   std::vector<int> row_bounds, col_bounds;
   for (int r = 0; r < H; ++r) if (wall_row[r]) row_bounds.push_back(r);
   for (int c = 0; c < W; ++c) if (wall_col[c]) col_bounds.push_back(c);
 
-  if (row_bounds.size() < 2 || col_bounds.size() < 2) {
-    std::cout << "[ROOM] No grid room structure, trying corridor detection\n";
-    // Don't return! Fall through to Dijkstra corridor detection
-  } else {
-
   int room_id = 0;
-  for (int ri = 0; ri + 1 < (int)row_bounds.size(); ++ri) {
-    for (int ci = 0; ci + 1 < (int)col_bounds.size(); ++ci) {
-      int r0 = row_bounds[ri]     + 1;
-      int r1 = row_bounds[ri + 1] - 1;
-      int c0 = col_bounds[ci]     + 1;
-      int c1 = col_bounds[ci + 1] - 1;
+  if (row_bounds.size() >= 2 && col_bounds.size() >= 2) {
+    for (int ri = 0; ri + 1 < (int)row_bounds.size(); ++ri) {
+      for (int ci = 0; ci + 1 < (int)col_bounds.size(); ++ci) {
+        int r0 = row_bounds[ri] + 1,     r1 = row_bounds[ri+1] - 1;
+        int c0 = col_bounds[ci] + 1,     c1 = col_bounds[ci+1] - 1;
+        if (r0 > r1 || c0 > c1) continue;
 
-      if (r0 > r1 || c0 > c1) continue;
-
-      RoomInfo room(room_id);
-
-      // Interior cells
-      for (int r = r0; r <= r1; ++r) {
-        for (int c = c0; c <= c1; ++c) {
-          int idx = r * W + c;
-          if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {
-            int vid = ins->G.U[idx]->id;
-            if (vid < (int)V_size) {
-              room.cells.push_back(vid);
-              cell_to_room[vid] = room_id;
+        RoomInfo room(room_id);
+        for (int r = r0; r <= r1; ++r) {
+          for (int c = c0; c <= c1; ++c) {
+            int idx = r * W + c;
+            if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {
+              int vid = ins->G.U[idx]->id;
+              if (vid < (int)V_size) {
+                room.cells.push_back(vid);
+                cell_to_room[vid] = room_id;
+              }
             }
           }
         }
-      }
+        if (room.cells.empty()) continue;
 
-      if (room.cells.empty()) continue;
+        // Entrance cells
+        auto add_entrance = [&](int r, int c) {
+          int idx = r * W + c;
+          if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {
+            int vid = ins->G.U[idx]->id;
+            if (vid < (int)V_size) room.entrances.push_back(vid);
+          }
+        };
+        for (int c = c0; c <= c1; ++c) add_entrance(row_bounds[ri], c);
+        for (int c = c0; c <= c1; ++c) add_entrance(row_bounds[ri+1], c);
+        for (int r = r0; r <= r1; ++r) add_entrance(r, col_bounds[ci]);
+        for (int r = r0; r <= r1; ++r) add_entrance(r, col_bounds[ci+1]);
 
-      // Entrance cells: gaps in boundary walls adjacent to this room
-      // Top boundary row
-      for (int c = c0; c <= c1; ++c) {
-        int idx = row_bounds[ri] * W + c;
-        if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {
-          int vid = ins->G.U[idx]->id;
-          if (vid < (int)V_size) room.entrances.push_back(vid);
-        }
+        room.capacity = std::max(1, (int)room.cells.size() / 2);
+        room.current_count = 0;
+        rooms.push_back(room);
+        room_id++;
       }
-      // Bottom boundary row
-      for (int c = c0; c <= c1; ++c) {
-        int idx = row_bounds[ri + 1] * W + c;
-        if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {
-          int vid = ins->G.U[idx]->id;
-          if (vid < (int)V_size) room.entrances.push_back(vid);
-        }
-      }
-      // Left boundary col
-      for (int r = r0; r <= r1; ++r) {
-        int idx = r * W + col_bounds[ci];
-        if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {
-          int vid = ins->G.U[idx]->id;
-          if (vid < (int)V_size) room.entrances.push_back(vid);
-        }
-      }
-      // Right boundary col
-      for (int r = r0; r <= r1; ++r) {
-        int idx = r * W + col_bounds[ci + 1];
-        if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {
-          int vid = ins->G.U[idx]->id;
-          if (vid < (int)V_size) room.entrances.push_back(vid);
-        }
-      }
-
-      // capacity = half room size (realistic threshold)
-      room.capacity = std::max(1, (int)room.cells.size() / 2);
-      room.current_count = 0;
-      rooms.push_back(room);
-      room_id++;
     }
   }
 
-  } // end else (grid room detection)
-  for (auto* v : ins->G.V) {
-  }
-  // ── Dijkstra-based corridor room detection ────────────────────
-  // For each corridor cell, run DFS outward
-  // If DFS terminates cleanly (no other corridor) = it's a dead-end room
-  // This catches rooms that wall-scanning might miss
-
+  // Phase 2: Boundary-aware corridor flood fill
   std::vector<bool> visited(V_size, false);
-
-  // Mark all cells already assigned to a room as visited
-  for (int i = 0; i < (int)V_size; i++) {
+  for (int i = 0; i < (int)V_size; i++)
     if (cell_to_room[i] >= 0) visited[i] = true;
-  }
 
   for (auto* v : ins->G.V) {
-      if (!is_corridor((int)v->id)) continue;
+    if (!is_corridor((int)v->id)) continue;
     if (visited[v->id]) continue;
 
-    // BFS/DFS from this corridor cell
     std::queue<Vertex*> q;
-    std::vector<Vertex*> component;
+    std::vector<int> comp;
     q.push(v);
     visited[v->id] = true;
 
-    bool hits_another_corridor = false;
-    bool hits_open_space = false;
+    std::set<int> connected_rooms;
+    bool hits_open = false;
 
     while (!q.empty()) {
       auto* cur = q.front(); q.pop();
-      component.push_back(cur);
-
+      comp.push_back(cur->id);
       for (auto* nb : cur->neighbor) {
+        int nb_room = cell_to_room[nb->id];
+        if (nb_room >= 0) {
+          connected_rooms.insert(nb_room);
+          continue;
+        }
         if (visited[nb->id]) continue;
         visited[nb->id] = true;
-        if (is_corridor((int)nb->id)) {
-          hits_another_corridor = true;
-        } else {
-          hits_open_space = true;
-        }
+        if ((int)nb->neighbor.size() >= 3) hits_open = true;
         q.push(nb);
       }
     }
 
-    // Dead-end corridor: small component, no other corridors
-    // = this IS a room entrance corridor
-    if (component.size() <= 10) {  // entrance corridor found
-      // Mark these as corridor (not room)
-      // They connect to rooms already detected
-      std::cout << "[CORR] Entrance corridor: " << component.size() << " cells\n";
-    }
+    // Classify corridor
+    std::string ctype = "HALLWAY";
+    if (connected_rooms.size() == 1 && hits_open)  ctype = "ENTRANCE";
+    if (connected_rooms.size() >= 2)               ctype = "TUNNEL";
+    if (connected_rooms.size() == 1 && !hits_open) ctype = "ALCOVE";
+
+    std::cout << "[CORR] " << ctype
+              << ": " << comp.size() << " cells, rooms=[";
+    for (int r : connected_rooms) std::cout << r << " ";
+    std::cout << "]\n";
   }
 
   std::cout << "[ROOM] Detected " << rooms.size() << " rooms\n";
@@ -520,10 +400,7 @@ void Planner::detect_rooms(int width, int height)
 
 void Planner::update_room_counts()
 {
-  // Reset all counts
   for (auto& r : rooms) r.current_count = 0;
-
-  // Count agents in each room
   for (auto* a : A) {
     if (a->v_now == nullptr) continue;
     int rid = cell_to_room[a->v_now->id];
@@ -534,84 +411,35 @@ void Planner::update_room_counts()
 
 bool Planner::approaching_full_room(Agent* ai)
 {
-  if (rooms.empty()) return false;
-  if (ai->v_now == nullptr) return false;
-
+  if (rooms.empty() || ai->v_now == nullptr) return false;
   int current_room = cell_to_room[ai->v_now->id];
+  if (current_room >= 0) return false;  // already inside
 
-  // Only block agents that are OUTSIDE the room
-  // (not at entrance, not inside)
-  // If agent is already at entrance cell → let PIBT handle it
-  if (current_room >= 0) return false;  // already inside a room
-
-  // Check if agent is AT an entrance cell
-  // Entrance cells are in cell_to_room as part of the room
-  // but the agent standing there would block the exit!
-  // So only block agents who are in the OPEN CORRIDOR
-  // i.e. none of their neighbours is an entrance
-  bool next_to_entrance = false;
-  for (auto* nb : ai->v_now->neighbor) {
-    // Is this neighbour an entrance cell?
-    for (auto& room : rooms) {
-      for (int e : room.entrances) {
-        if ((int)nb->id == e) {
-          next_to_entrance = true;
-          break;
-        }
-      }
-    }
-  }
-  // Only block if agent is next to entrance (in corridor)
-  // not if already at entrance
-  bool at_entrance = false;
-  for (auto& room : rooms) {
-    for (int e : room.entrances) {
-      if ((int)ai->v_now->id == e) {
-        at_entrance = true;
-        break;
-      }
-    }
-  }
-  if (at_entrance) return false; // already at entrance, let PIBT decide
-
-  // Check each neighbour the agent might move to
   for (auto* nb : ai->v_now->neighbor) {
     int rid = cell_to_room[nb->id];
-    if (rid < 0) continue;           // neighbour not in any room
-    if (rid == current_room) continue; // already in same room
-
-    // Agent is outside this room, neighbour is inside
-    auto& room = rooms[rid];
-
-    // Is room full?
-    if (room.current_count >= room.capacity) {
+    if (rid < 0) continue;
+    if (rooms[rid].current_count >= rooms[rid].capacity)
       return true;
-    }
   }
   return false;
 }
-
-// ── End Room Capacity System ──────────────────────────────────────────────
 
 std::pair<bool, int> Planner::funcPIBT(Agent* ai, Agent* root, HNode* H)
 {
   const auto i = ai->id;
   const auto K = ai->v_now->neighbor.size();
-  ai->root_agent = root->id;  // set root agent
+  ai->root_agent = root->id;
 
-  // get candidates for next locations
   for (auto k = 0; k < K; ++k) {
     auto u = ai->v_now->neighbor[k];
     C_next[i][k] = u;
-    if (MT != nullptr)
-      tie_breakers[u->id] = get_random_float(MT);  // set tie-breaker
+    if (MT != nullptr) tie_breakers[u->id] = get_random_float(MT);
   }
   C_next[i][K] = ai->v_now;
 
-  // sort
   std::sort(C_next[i].begin(), C_next[i].begin() + K + 1,
             [&](Vertex* const v, Vertex* const u) {
-              return D.get(i, v) + tie_breakers[v->id] <
+              return D.get(i, v) + tie_breakers[v->id] < 
                      D.get(i, u) + tie_breakers[u->id];
             });
 
@@ -622,61 +450,43 @@ std::pair<bool, int> Planner::funcPIBT(Agent* ai, Agent* root, HNode* H)
   int pswap_agent = -1;
   if (root != ai) pswap_agent = i;
 
-  // main operation
   for (auto k = 0; k < K + 1; ++k) {
     auto u = C_next[i][k];
-
-    // avoid vertex conflicts
     if (occupied_next[u->id] != nullptr) {
       if (H->priorities[occupied_next[u->id]->id] > H->priorities[root->id])
         pswap_agent = INT_MAX;
-      else if(pswap_agent == -1 || 
-        (pswap_agent != INT_MAX && 
-          H->priorities[occupied_next[u->id]->id] > H->priorities[pswap_agent] && 
-          H->priorities[occupied_next[u->id]->id] < H->priorities[root->id])
-        )
+      else if (pswap_agent == -1 ||
+               (pswap_agent != INT_MAX &&
+                H->priorities[occupied_next[u->id]->id] > H->priorities[pswap_agent] &&
+                H->priorities[occupied_next[u->id]->id] < H->priorities[root->id]))
         pswap_agent = occupied_next[u->id]->id;
       continue;
     }
-
     auto& ak = occupied_now[u->id];
-
-    // avoid swap conflicts
     if (ak != nullptr && ak->v_next == ai->v_now) continue;
-
-    // reserve next location
     occupied_next[u->id] = ai;
     ai->v_next = u;
-
-    // priority inheritance
-    if (ak != nullptr && ak != ai && ak->v_next == nullptr){
-        auto result =  funcPIBT(ak, root, H);
-      if (!result.first){
-        if (result.second == INT_MAX) {
-          pswap_agent = INT_MAX;  // no swap possible
-        }
-        else if (pswap_agent == -1 || (pswap_agent != INT_MAX && H->priorities[result.second] > H->priorities[pswap_agent])) {
-          pswap_agent = result.second;  // update pswap_agent
-        }
+    if (ak != nullptr && ak != ai && ak->v_next == nullptr) {
+      auto result = funcPIBT(ak, root, H);
+      if (!result.first) {
+        if (result.second == INT_MAX) pswap_agent = INT_MAX;
+        else if (pswap_agent == -1 ||
+                 (pswap_agent != INT_MAX &&
+                  H->priorities[result.second] > H->priorities[pswap_agent]))
+          pswap_agent = result.second;
         continue;
       }
     }
-
-    // success to plan next one step
-    // pull swap_agent when applicable
     if (k == 0 && swap_agent != nullptr && swap_agent->v_next == nullptr &&
         occupied_next[ai->v_now->id] == nullptr) {
       swap_agent->v_next = ai->v_now;
       occupied_next[swap_agent->v_next->id] = swap_agent;
     }
-
-    if (ai == root && ai->v_next == ai->v_now){
-      return std::make_pair(true, pswap_agent);  // root agent is done
-    }
+    if (ai == root && ai->v_next == ai->v_now)
+      return std::make_pair(true, pswap_agent);
     return std::make_pair(true, INT_MAX);
   }
 
-  // failed to secure node
   occupied_next[ai->v_now->id] = ai;
   ai->v_next = ai->v_now;
   return std::make_pair(false, pswap_agent);
@@ -685,31 +495,22 @@ std::pair<bool, int> Planner::funcPIBT(Agent* ai, Agent* root, HNode* H)
 Agent* Planner::swap_possible_and_required(Agent* ai)
 {
   const auto i = ai->id;
-  // ai wanna stay at v_now -> no need to swap
   if (C_next[i][0] == ai->v_now) return nullptr;
-
-  // usual swap situation, c.f., case-a, b
   auto aj = occupied_now[C_next[i][0]->id];
   if (aj != nullptr && aj->v_next == nullptr &&
       is_swap_required(ai->id, aj->id, ai->v_now, aj->v_now) &&
-      is_swap_possible(aj->v_now, ai->v_now)) {
+      is_swap_possible(aj->v_now, ai->v_now))
     return aj;
-  }
-
-  // for clear operation, c.f., case-c
   for (auto u : ai->v_now->neighbor) {
     auto ak = occupied_now[u->id];
     if (ak == nullptr || C_next[i][0] == ak->v_now) continue;
     if (is_swap_required(ak->id, ai->id, ai->v_now, C_next[i][0]) &&
-        is_swap_possible(C_next[i][0], ai->v_now)) {
+        is_swap_possible(C_next[i][0], ai->v_now))
       return ak;
-    }
   }
-
   return nullptr;
 }
 
-// simulate whether the swap is required
 bool Planner::is_swap_required(const uint pusher, const uint puller,
                                Vertex* v_pusher_origin, Vertex* v_puller_origin)
 {
@@ -718,46 +519,38 @@ bool Planner::is_swap_required(const uint pusher, const uint puller,
   Vertex* tmp = nullptr;
   while (D.get(pusher, v_puller) < D.get(pusher, v_pusher)) {
     auto n = v_puller->neighbor.size();
-    // remove agents who need not to move
     for (auto u : v_puller->neighbor) {
       auto a = occupied_now[u->id];
       if (u == v_pusher ||
-          (u->neighbor.size() == 1 && a != nullptr && ins->goals[a->id] == u)) {
+          (u->neighbor.size() == 1 && a != nullptr && ins->goals[a->id] == u))
         --n;
-      } else {
-        tmp = u;
-      }
+      else tmp = u;
     }
-    if (n >= 2) return false;  // able to swap
+    if (n >= 2) return false;
     if (n <= 0) break;
     v_pusher = v_puller;
     v_puller = tmp;
   }
-
-  // judge based on distance
   return (D.get(puller, v_pusher) < D.get(puller, v_puller)) &&
          (D.get(pusher, v_pusher) == 0 ||
           D.get(pusher, v_puller) < D.get(pusher, v_pusher));
 }
 
-// simulate whether the swap is possible
 bool Planner::is_swap_possible(Vertex* v_pusher_origin, Vertex* v_puller_origin)
 {
   auto v_pusher = v_pusher_origin;
   auto v_puller = v_puller_origin;
   Vertex* tmp = nullptr;
-  while (v_puller != v_pusher_origin) {  // avoid loop
-    auto n = v_puller->neighbor.size();  // count #(possible locations) to pull
+  while (v_puller != v_pusher_origin) {
+    auto n = v_puller->neighbor.size();
     for (auto u : v_puller->neighbor) {
       auto a = occupied_now[u->id];
       if (u == v_pusher ||
-          (u->neighbor.size() == 1 && a != nullptr && ins->goals[a->id] == u)) {
-        --n;      // pull-impossible with u
-      } else {
-        tmp = u;  // pull-possible with u
-      }
+          (u->neighbor.size() == 1 && a != nullptr && ins->goals[a->id] == u))
+        --n;
+      else tmp = u;
     }
-    if (n >= 2) return true;  // able to swap
+    if (n >= 2) return true;
     if (n <= 0) return false;
     v_pusher = v_puller;
     v_puller = tmp;
@@ -767,12 +560,8 @@ bool Planner::is_swap_possible(Vertex* v_pusher_origin, Vertex* v_puller_origin)
 
 std::ostream& operator<<(std::ostream& os, const Objective obj)
 {
-  if (obj == OBJ_NONE) {
-    os << "none";
-  } else if (obj == OBJ_MAKESPAN) {
-    os << "makespan";
-  } else if (obj == OBJ_SUM_OF_LOSS) {
-    os << "sum_of_loss";
-  }
+  if (obj == OBJ_NONE) os << "none";
+  else if (obj == OBJ_MAKESPAN) os << "makespan";
+  else if (obj == OBJ_SUM_OF_LOSS) os << "sum_of_loss";
   return os;
 }
