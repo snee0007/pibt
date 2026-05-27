@@ -353,11 +353,6 @@ void Planner::detect_rooms(int width, int height)
   const int H = ins->G.height;
   const int total = W * H;
 
-  std::cout << "[DEBUG] W=" << W << " H=" << H
-            << " total=" << total
-            << " V_size=" << V_size
-            << " U.size=" << ins->G.U.size() << "\n";
-
   // Initialize cell_to_room with -1 (no room)
   cell_to_room.assign(V_size, -1);
 
@@ -388,9 +383,9 @@ void Planner::detect_rooms(int width, int height)
   for (int c = 0; c < W; ++c) if (wall_col[c]) col_bounds.push_back(c);
 
   if (row_bounds.size() < 2 || col_bounds.size() < 2) {
-    std::cout << "[ROOM] No room structure detected\n";
-    return;
-  }
+    std::cout << "[ROOM] No grid room structure, trying corridor detection\n";
+    // Don't return! Fall through to Dijkstra corridor detection
+  } else {
 
   int room_id = 0;
   for (int ri = 0; ri + 1 < (int)row_bounds.size(); ++ri) {
@@ -462,6 +457,9 @@ void Planner::detect_rooms(int width, int height)
     }
   }
 
+  } // end else (grid room detection)
+  for (auto* v : ins->G.V) {
+  }
   // ── Dijkstra-based corridor room detection ────────────────────
   // For each corridor cell, run DFS outward
   // If DFS terminates cleanly (no other corridor) = it's a dead-end room
@@ -475,7 +473,7 @@ void Planner::detect_rooms(int width, int height)
   }
 
   for (auto* v : ins->G.V) {
-    if (!is_corridor((int)v->id)) continue;
+      if (!is_corridor((int)v->id)) continue;
     if (visited[v->id]) continue;
 
     // BFS/DFS from this corridor cell
@@ -505,12 +503,10 @@ void Planner::detect_rooms(int width, int height)
 
     // Dead-end corridor: small component, no other corridors
     // = this IS a room entrance corridor
-    if (!hits_another_corridor && component.size() <= 3) {
+    if (component.size() <= 10) {  // entrance corridor found
       // Mark these as corridor (not room)
       // They connect to rooms already detected
-      std::cout << "[CORR] Entrance corridor: "
-                << component.size() << " cells
-";
+      std::cout << "[CORR] Entrance corridor: " << component.size() << " cells\n";
     }
   }
 
@@ -577,8 +573,6 @@ bool Planner::approaching_full_room(Agent* ai)
     }
   }
   if (at_entrance) return false; // already at entrance, let PIBT decide
-
-  }
 
   // Check each neighbour the agent might move to
   for (auto* nb : ai->v_now->neighbor) {
