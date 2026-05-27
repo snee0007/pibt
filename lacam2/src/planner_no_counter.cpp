@@ -99,21 +99,7 @@ Solution Planner::solve(std::string& additional_info)
                        (uint)solution.size(),
                        get_h_value(C_now));
 
-    // ── ROOM CAPACITY CHECK ──────────────────────────────────────
-    // Lower priority of agents trying to enter full rooms
-    // so agents inside (exiting) go first
-    for (uint kk = 0; kk < N; ++kk) {
-      if (approaching_full_room(A[kk])) {
-        H->priorities[kk] = 0.0001f;
-      }
-    }
-    // Re-sort with updated priorities
-    std::iota(H->order.begin(), H->order.end(), 0);
-    std::sort(H->order.begin(), H->order.end(),
-              [&](uint i, uint j) {
-                return H->priorities[i] > H->priorities[j];
-              });
-    // ────────────────────────────────────────────────────────────
+    // ── ROOM CAPACITY CHECK DISABLED ───────────────────────────
 
     for (auto k : H->order) {
       auto* a = A[k];
