@@ -155,8 +155,11 @@ Solution Planner::solve(std::string& additional_info)
           H->priorities[kk] = 999.0f + H->priorities[kk];
       }
       // Room full → block entry
-      if (approaching_full_room(A[kk]))
+      if (approaching_full_room(A[kk])) {
+        static int chits = 0; chits++;
+        if (chits<=5) std::cout << "[COUNTER] agent " << kk << " step " << loop_cnt << "\n";
         H->priorities[kk] = 0.0001f;
+      }
     }
     // Re-sort
     std::iota(H->order.begin(), H->order.end(), 0);
@@ -183,42 +186,26 @@ Solution Planner::solve(std::string& additional_info)
       break;
     }
 
-    // Print priorities for agents 3 and 7
-    if (loop_cnt <= 20) {
-      std::cout << "[P" << loop_cnt << "] "
-                << "A3@" << A[3]->v_now->id 
-                << " pri=" << H->priorities[3]
-                << " dist=" << D.get(3, A[3]->v_now)
-                << " | "
-                << "A7@" << A[7]->v_now->id
-                << " pri=" << H->priorities[7]
-                << " dist=" << D.get(7, A[7]->v_now)
-                << "\n";
-    }
-    if (loop_cnt <= 20) {
-      std::cout << "[S" << loop_cnt << "] ";
-      for (uint i = 0; i < N; ++i) {
-        int goal = ins->goals[i]->id;
-        std::cout << i << ":"
-                  << A[i]->v_now->id << "->" << goal << " ";
-      }
-      std::cout << "\n";
-    }
-    // Print agent positions every 50000 steps
-    if (loop_cnt % 50000 == 0) {
+    // Show first 25 steps
+    if (loop_cnt <= 25) {
       std::cout << "[T=" << loop_cnt << "] ";
       for (uint i = 0; i < N; ++i) {
         int rid = cell_to_room[A[i]->v_now->id];
+        std::string loc = (rid >= 0) ? "IN" : "OUT";
         std::cout << i << "@" << A[i]->v_now->id
-                  << "(r=" << rid << ") ";
+                  << "(" << loc << ") ";
       }
       std::cout << "\n";
     }
 
+
+
     solution.push_back(C_new);
 
+    // FIX: clear ALL old cells first, THEN occupy new ones.
+    // Interleaved clear/set corrupted occupied_now for chained moves.
+    for (auto* a : A) occupied_now[a->v_now->id] = nullptr;
     for (auto* a : A) {
-      occupied_now[a->v_now->id] = nullptr;
       a->v_now = a->v_next;
       occupied_now[a->v_now->id] = a;
     }

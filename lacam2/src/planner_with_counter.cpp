@@ -104,6 +104,8 @@ Solution Planner::solve(std::string& additional_info)
     // so agents inside (exiting) go first
     for (uint kk = 0; kk < N; ++kk) {
       if (approaching_full_room(A[kk])) {
+        static int counter_hits = 0; counter_hits++;
+        if (counter_hits <= 5) std::cout << "[COUNTER] agent " << kk << " step " << loop_cnt << "\n";
         H->priorities[kk] = 0.0001f;
       }
     }
@@ -134,8 +136,10 @@ Solution Planner::solve(std::string& additional_info)
 
     solution.push_back(C_new);
 
+    // FIX: clear ALL old cells first, THEN occupy new ones.
+    // Interleaved clear/set corrupted occupied_now for chained moves.
+    for (auto* a : A) occupied_now[a->v_now->id] = nullptr;
     for (auto* a : A) {
-      occupied_now[a->v_now->id] = nullptr;
       a->v_now = a->v_next;
       occupied_now[a->v_now->id] = a;
     }

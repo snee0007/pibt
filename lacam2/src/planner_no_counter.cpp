@@ -118,10 +118,24 @@ Solution Planner::solve(std::string& additional_info)
       break;
     }
 
+    // Show first 25 steps
+    if (loop_cnt <= 25) {
+      std::cout << "[T=" << loop_cnt << "] ";
+      for (uint i = 0; i < N; ++i) {
+        int rid = cell_to_room[A[i]->v_now->id];
+        std::string loc = (rid >= 0) ? "IN" : "OUT";
+        std::cout << i << "@" << A[i]->v_now->id
+                  << "(" << loc << ") ";
+      }
+      std::cout << "\n";
+    }
+
     solution.push_back(C_new);
 
+    // FIX: clear ALL old cells first, THEN occupy new ones.
+    // Interleaved clear/set corrupted occupied_now for chained moves.
+    for (auto* a : A) occupied_now[a->v_now->id] = nullptr;
     for (auto* a : A) {
-      occupied_now[a->v_now->id] = nullptr;
       a->v_now = a->v_next;
       occupied_now[a->v_now->id] = a;
     }
