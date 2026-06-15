@@ -107,6 +107,11 @@ Solution Planner::solve(std::string& additional_info)
   std::vector<Config> solution;
   solution.push_back(ins->starts);
 
+  // Persistent PIBT priorities: +1 each step not at goal (anti-livelock),
+  // reset to fractional part at goal. Survives across timesteps.
+  std::vector<float> pri(N, 0.0f);
+  bool pri_init = false;
+
   while (!is_expired(deadline)) {
     loop_cnt++;
 
@@ -132,6 +137,17 @@ Solution Planner::solve(std::string& additional_info)
     auto H = new HNode(C_now, D, nullptr,
                        (uint)solution.size(),
                        get_h_value(C_now));
+
+    if (!pri_init) {
+      for (uint pi = 0; pi < N; ++pi) pri[pi] = H->priorities[pi];
+      pri_init = true;
+    } else {
+      for (uint pi = 0; pi < N; ++pi) {
+        if (A[pi]->v_now != ins->goals[pi]) pri[pi] += 1.0f;
+        else pri[pi] = pri[pi] - std::floor(pri[pi]);
+      }
+    }
+    for (uint pi = 0; pi < N; ++pi) H->priorities[pi] = pri[pi];
 
     // ── PERSISTENT EXIT PRIORITY ─────────────────────────────────
     // Agent inside room with goal outside:
@@ -172,7 +188,12 @@ Solution Planner::solve(std::string& additional_info)
     for (auto k : H->order) {
       auto* a = A[k];
       if (a->v_next != nullptr) continue;
-      funcPIBT(a, a, H);
+      auto result = funcPIBT(a, a, H);
+      // Mike's priority swap, persisted so it matters next timestep
+      if (result.second != INT_MAX && result.second != -1) {
+        std::swap(pri[k], pri[(uint)result.second]);
+        std::swap(H->priorities[k], H->priorities[(uint)result.second]);
+      }
     }
 
     Config C_new(N);
@@ -321,134 +342,134 @@ bool Planner::get_new_config(HNode* H, LNode* L)
 bool Planner::is_corridor(int vid) const
 {
   if (vid < 0 || vid >= (int)V_size) return false;
-  Vertex* v = nullptr;
-  for (auto* u : ins->G.V) {
-    if ((int)u->id == vid) { v = u; break; }
-  }
-  if (!v) return false;
-  return v->neighbor.size() == 2;
+  return ins->G.V[vid]->neighbor.size() <= 2;
 }
 
 void Planner::detect_rooms(int width, int height)
 {
-  const int W = ins->G.width;
-  const int H = ins->G.height;
-  const int total = W * H;
-
   cell_to_room.assign(V_size, -1);
+  rooms.clear();
 
-  std::vector<bool> wall_row(H, false);
-  std::vector<bool> wall_col(W, false);
+  auto deg = [&](int v){ return (int)ins->G.V[v]->neighbor.size(); };
 
-  for (int r = 0; r < H; ++r) {
-    int wc = 0;
-    for (int c = 0; c < W; ++c) {
-      int idx = r * W + c;
-      if (idx >= total || ins->G.U[idx] == nullptr) wc++;
-    }
-    if ((float)wc / W > 0.5f) wall_row[r] = true;
-  }
-  for (int c = 0; c < W; ++c) {
-    int wc = 0;
-    for (int r = 0; r < H; ++r) {
-      int idx = r * W + c;
-      if (idx >= total || ins->G.U[idx] == nullptr) wc++;
-    }
-    if ((float)wc / H > 0.5f) wall_col[c] = true;
-  }
+  // ============================================================
+  // EXACT ROOM DETECTION via single-cut test.
+  // Definition: a "room" is a maximal region whose ONLY connection
+  // to the rest of the map is through one corridor cell (a graph cut).
+  // Regions with 2+ connections are open/through-space, not rooms.
+  // ============================================================
 
-  std::vector<int> row_bounds, col_bounds;
-  for (int r = 0; r < H; ++r) if (wall_row[r]) row_bounds.push_back(r);
-  for (int c = 0; c < W; ++c) if (wall_col[c]) col_bounds.push_back(c);
+  // STEP 1: classify every cell as WIDE (deg>=3) or THIN (deg<=2).
+  // THIN cells are corridor candidates; WIDE cells are interior.
 
-  int room_id = 0;
-  if (row_bounds.size() >= 2 && col_bounds.size() >= 2) {
-    for (int ri = 0; ri + 1 < (int)row_bounds.size(); ++ri) {
-      for (int ci = 0; ci + 1 < (int)col_bounds.size(); ++ci) {
-        int r0 = row_bounds[ri]+1, r1 = row_bounds[ri+1]-1;
-        int c0 = col_bounds[ci]+1, c1 = col_bounds[ci+1]-1;
-        if (r0 > r1 || c0 > c1) continue;
+  // STEP 2: cluster WIDE cells into regions by flooding through WIDE cells
+  // AND through THIN cells, but we will cut at thin "necks". To get exact
+  // regions we instead flood the WHOLE free space but record, for each
+  // region, the thin cells that act as its connectors.
+  //
+  // Practical exact method: for every THIN cell, test if it is a CUT
+  // (its removal disconnects its neighbours). Collect cut cells. Then
+  // remove all cut cells; the free space breaks into components; each
+  // small component reachable through exactly ONE cut cell is a room.
 
-        RoomInfo room(room_id);
-        for (int r = r0; r <= r1; ++r)
-          for (int c = c0; c <= c1; ++c) {
-            int idx = r * W + c;
-            if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {
-              int vid = ins->G.U[idx]->id;
-              if (vid < (int)V_size) {
-                room.cells.push_back(vid);
-                cell_to_room[vid] = room_id;
-              }
-            }
-          }
-        if (room.cells.empty()) continue;
+  int N = (int)V_size;
 
-        auto add_ent = [&](int r, int c) {
-          int idx = r * W + c;
-          if (idx >= 0 && idx < total && ins->G.U[idx] != nullptr) {
-            int vid = ins->G.U[idx]->id;
-            if (vid < (int)V_size) room.entrances.push_back(vid);
-          }
-        };
-        for (int c = c0; c <= c1; ++c) add_ent(row_bounds[ri], c);
-        for (int c = c0; c <= c1; ++c) add_ent(row_bounds[ri+1], c);
-        for (int r = r0; r <= r1; ++r) add_ent(r, col_bounds[ci]);
-        for (int r = r0; r <= r1; ++r) add_ent(r, col_bounds[ci+1]);
-
-        room.capacity = std::max(1, (int)room.cells.size() / 2);
-        room.current_count = 0;
-        rooms.push_back(room);
-        room_id++;
+  // --- find articulation: a thin cell is a "door" if removing it
+  //     disconnects the local neighbourhood (its open neighbours can no
+  //     longer reach each other without passing through it). ---
+  auto reachable_without = [&](int a, int b, int blocked)->bool{
+    if (a==blocked||b==blocked) return false;
+    std::vector<char> seen(N,0);
+    std::queue<int> q; q.push(a); seen[a]=1;
+    while(!q.empty()){
+      int c=q.front(); q.pop();
+      if(c==b) return true;
+      for(auto* nb:ins->G.V[c]->neighbor){
+        int n=(int)nb->id;
+        if(n==blocked||seen[n]) continue;
+        seen[n]=1; q.push(n);
       }
     }
+    return false;
+  };
+
+  // A thin cell is a DOOR if it has two open neighbours that cannot reach
+  // each other when it is removed.
+  std::vector<char> is_door(N,0);
+  for(int c=0;c<N;c++){
+    if(deg(c)>2) continue;             // doors are thin
+    auto& nb=ins->G.V[c]->neighbor;
+    bool door=false;
+    for(size_t a=0;a<nb.size()&&!door;a++)
+      for(size_t b=a+1;b<nb.size()&&!door;b++)
+        if(!reachable_without((int)nb[a]->id,(int)nb[b]->id,c)) door=true;
+    is_door[c]=door;
   }
 
-  // Boundary-aware corridor flood fill
-  std::vector<bool> visited(V_size, false);
-  for (int i = 0; i < (int)V_size; i++)
-    if (cell_to_room[i] >= 0) visited[i] = true;
-
-  for (auto* v : ins->G.V) {
-    if (!is_corridor((int)v->id)) continue;
-    if (visited[v->id]) continue;
-
-    std::queue<Vertex*> q;
-    std::vector<int> comp;
-    q.push(v);
-    visited[v->id] = true;
-
-    std::set<int> connected_rooms;
-    bool hits_open = false;
-
-    while (!q.empty()) {
-      auto* cur = q.front(); q.pop();
-      comp.push_back(cur->id);
-      for (auto* nb : cur->neighbor) {
-        int nb_room = cell_to_room[nb->id];
-        if (nb_room >= 0) { connected_rooms.insert(nb_room); continue; }
-        if (visited[nb->id]) continue;
-        visited[nb->id] = true;
-        if ((int)nb->neighbor.size() >= 3) hits_open = true;
-        q.push(nb);
+  // STEP 3: remove all door cells; flood the remaining free space into
+  // components. Each component's "exits" = the door cells adjacent to it.
+  std::vector<int> comp(N,-1);
+  int ncomp=0;
+  for(int s=0;s<N;s++){
+    if(is_door[s]||comp[s]>=0) continue;
+    std::vector<int> cells; std::queue<int> q;
+    q.push(s); comp[s]=ncomp;
+    while(!q.empty()){
+      int c=q.front(); q.pop(); cells.push_back(c);
+      for(auto* nb:ins->G.V[c]->neighbor){
+        int n=(int)nb->id;
+        if(is_door[n]||comp[n]>=0) continue;
+        comp[n]=ncomp; q.push(n);
       }
     }
-
-    std::string ctype = "HALLWAY";
-    if (connected_rooms.size() == 1 && hits_open)  ctype = "ENTRANCE";
-    if (connected_rooms.size() >= 2)               ctype = "TUNNEL";
-    if (connected_rooms.size() == 1 && !hits_open) ctype = "ALCOVE";
-
-    std::cout << "[CORR] " << ctype << ": " << comp.size()
-              << " cells, rooms=[";
-    for (int r : connected_rooms) std::cout << r << " ";
-    std::cout << "]\n";
+    ncomp++;
   }
 
-  std::cout << "[ROOM] Detected " << rooms.size() << " rooms\n";
-  for (auto& r : rooms)
-    std::cout << "[ROOM]   Room " << r.id
-              << ": " << r.cells.size() << " cells"
-              << ", capacity=" << r.capacity
+  // gather each component's cells and its set of adjacent doors
+  std::vector<std::vector<int>> comp_cells(ncomp);
+  std::vector<std::set<int>> comp_doors(ncomp);
+  for(int c=0;c<N;c++){
+    if(comp[c]<0) continue;
+    comp_cells[comp[c]].push_back(c);
+    for(auto* nb:ins->G.V[c]->neighbor)
+      if(is_door[(int)nb->id]) comp_doors[comp[c]].insert((int)nb->id);
+  }
+
+  // STEP 4: classify. A component is a ROOM iff it connects to the rest
+  // of the map through exactly ONE door. Report the exit distribution.
+  std::map<int,int> exit_hist;
+  int room_id=0, biggest=-1; size_t bigsz=0;
+  for(int k=0;k<ncomp;k++){
+    if(comp_cells[k].size()>bigsz){ bigsz=comp_cells[k].size(); biggest=k; }
+  }
+  for(int k=0;k<ncomp;k++){
+    int exits=(int)comp_doors[k].size();
+    exit_hist[exits]++;
+    // the largest component is the open map; never a room
+    if(k==biggest) continue;
+    // a sealed component is only a ROOM if it has real interior (a wide cell).
+    // all-thin components are hallway fragments, not rooms.
+    bool has_interior=false;
+    for(int c:comp_cells[k]) if(deg(c)>=3){ has_interior=true; break; }
+    if(exits==1 && has_interior){
+      RoomInfo room(room_id);
+      for(int c:comp_cells[k]){ room.cells.push_back(c); cell_to_room[c]=room_id; }
+      for(int d:comp_doors[k]) room.corridor_cells.push_back(d);
+      room.entrances.push_back(*comp_doors[k].begin());
+      room.capacity=(int)room.cells.size();
+      room.current_count=0;
+      rooms.push_back(room);
+      room_id++;
+    }
+  }
+
+  std::cout << "[STRUCT] components=" << ncomp << " exit distribution: ";
+  for(auto& kv:exit_hist) std::cout << kv.second << "x(" << kv.first << "exit) ";
+  std::cout << "\n";
+  std::cout << "[ROOM] Detected " << rooms.size() << " sealed rooms (exactly 1 exit)\n";
+  for(auto& r:rooms)
+    std::cout << "[ROOM]   Room " << r.id << ": " << r.cells.size()
+              << " cells, capacity=" << r.capacity
               << ", entrances=" << r.entrances.size() << "\n";
 }
 
