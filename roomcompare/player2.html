@@ -1,0 +1,99 @@
+<!DOCTYPE html><html><head><meta charset="utf8"><title>detector replay (detailed)</title>
+<style>
+body{font-family:monospace;background:#111;color:#eee;margin:0;padding:16px}
+#grid{display:grid;gap:1px;margin:12px 0}
+.cell{width:26px;height:26px;font-size:8px;display:flex;align-items:center;justify-content:center;color:#666;position:relative}
+.wall{background:#222;color:#333}.open{background:#3a3a3a}
+.door{background:#d8a01f;color:#000}
+.room{background:#1d9e75;color:#000}
+.room2{background:#2a8fd8;color:#000}
+.corridor{background:#5a4a1a}
+.outside{background:#444;color:#888}
+.testing{background:#1f6fd8;color:#fff;outline:2px solid #fff;box-sizing:border-box}
+.nbr{background:#9a4fb0;color:#fff}
+button{font-size:14px;padding:6px 14px;margin:3px;background:#333;color:#eee;border:1px solid #666;cursor:pointer;border-radius:4px}
+button:hover{background:#444}
+#status{font-size:15px;margin:8px 0;min-height:20px;font-weight:bold}
+#detail{font-size:13px;color:#ffcf6f;margin:6px 0;min-height:36px;line-height:1.5}
+#prog{font-size:12px;color:#888;margin:4px 0}
+.lg{display:inline-block;margin-right:12px;font-size:11px}
+.sw{display:inline-block;width:11px;height:11px;border-radius:2px;vertical-align:middle;margin-right:3px}
+input[type=range]{width:300px;vertical-align:middle}
+</style></head><body>
+<h2>Detector replay — detailed</h2>
+<div>Load trace JSON: <input type="file" id="file" accept=".json"></div>
+<div style="margin:8px 0">
+<span class="lg"><span class="sw" style="background:#1f6fd8"></span>cell under test</span>
+<span class="lg"><span class="sw" style="background:#9a4fb0"></span>its neighbours</span>
+<span class="lg"><span class="sw" style="background:#d8a01f"></span>door (cut)</span>
+<span class="lg"><span class="sw" style="background:#1d9e75"></span>1-door room</span>
+<span class="lg"><span class="sw" style="background:#2a8fd8"></span>multi-door room</span>
+<span class="lg"><span class="sw" style="background:#5a4a1a"></span>corridor</span>
+<span class="lg"><span class="sw" style="background:#444"></span>outside</span>
+</div>
+<div>
+<button onclick="goStart()">⏮ start</button>
+<button onclick="back()">◀ back</button>
+<button onclick="fwd()">next ▶</button>
+<button onclick="play()" id="pb">play ▶▶</button>
+<button onclick="goEnd()">end ⏭</button>
+<button onclick="skipTests()">skip to rooms ⏭⏭</button>
+</div>
+<div id="prog">no file loaded</div>
+<input type="range" id="slider" min="0" max="0" value="0" oninput="goto(+this.value)">
+<div id="status">load a trace_detail JSON</div>
+<div id="detail"></div>
+<div id="grid"></div>
+<script>
+let data=null,si=0,cellEl={},H,W,timer=null;
+document.getElementById('file').addEventListener('change',e=>{
+ let f=e.target.files[0];if(!f)return;let rd=new FileReader();
+ rd.onload=()=>{data=JSON.parse(rd.result);H=data.H;W=data.W;build();
+  document.getElementById('slider').max=data.steps.length;
+  goto(0);};
+ rd.readAsText(f);});
+function build(){let g=document.getElementById('grid');g.innerHTML='';cellEl={};
+ g.style.gridTemplateColumns=`repeat(${W},27px)`;
+ for(let r=0;r<H;r++)for(let c=0;c<W;c++){let d=document.createElement('div');
+  let open=data.grid[r][c]=='.';
+  d.className='cell '+(open?'open':'wall');d.textContent=open?(r+","+c):"";
+  cellEl[r*W+c]=d;g.appendChild(d);}}
+function paintBase(){for(let r=0;r<H;r++)for(let c=0;c<W;c++){
+  let open=data.grid[r][c]=='.';cellEl[r*W+c].className='cell '+(open?'open':'wall');}}
+// render state AFTER executing steps 0..si-1, with step si as the "current" highlight
+function render(){
+ paintBase();
+ // permanent effects from all steps before current
+ for(let k=0;k<si;k++){let s=data.steps[k];
+  if(s.phase=='test'){ if(s.isdoor) cellEl[s.test[0]*W+s.test[1]].className='cell door'; }
+  else if(s.phase=='classify'){ s.cells.forEach(([r,c])=>{
+    if(!cellEl[r*W+c].className.includes('door')) cellEl[r*W+c].className='cell '+s.color; }); }
+ }
+ // current step highlight
+ if(si<data.steps.length){let s=data.steps[si];
+  if(s.phase=='test'){
+   s.nbrs.forEach(([r,c])=>cellEl[r*W+c].className='cell nbr');
+   cellEl[s.test[0]*W+s.test[1]].className='cell testing';
+   if(s.isdoor) cellEl[s.test[0]*W+s.test[1]].classList.add('door');
+  } else if(s.phase=='classify'){
+   s.cells.forEach(([r,c])=>{ if(!cellEl[r*W+c].className.includes('door')) cellEl[r*W+c].className='cell '+s.color; });
+  }
+  document.getElementById('status').innerText=`[${si+1}/${data.steps.length}] ${s.msg}`;
+  document.getElementById('detail').innerText=s.detail||"";
+ } else {
+  document.getElementById('status').innerText="DONE — all steps complete.";
+  document.getElementById('detail').innerText="";
+ }
+ document.getElementById('slider').value=si;
+ document.getElementById('prog').innerText=`step ${si} / ${data.steps.length}`;
+}
+function goto(n){if(!data)return;si=Math.max(0,Math.min(n,data.steps.length));render();}
+function fwd(){goto(si+1);}
+function back(){goto(si-1);}
+function goStart(){goto(0);}
+function goEnd(){goto(data.steps.length);}
+function skipTests(){if(!data)return;let k=0;while(k<data.steps.length&&data.steps[k].phase=='test')k++;goto(k);}
+function play(){if(timer){clearInterval(timer);timer=null;document.getElementById('pb').innerText='play ▶▶';return;}
+ document.getElementById('pb').innerText='pause ⏸';
+ timer=setInterval(()=>{if(!data||si>=data.steps.length){clearInterval(timer);timer=null;document.getElementById('pb').innerText='play ▶▶';}else fwd();},250);}
+</script></body></html>

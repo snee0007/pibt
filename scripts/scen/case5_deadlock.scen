@@ -1,0 +1,17 @@
+version 1
+0	deadlock5.map	17	7	1	2	13	2	1
+0	deadlock5.map	17	7	2	2	14	2	1
+0	deadlock5.map	17	7	3	2	15	2	1
+0	deadlock5.map	17	7	1	3	13	3	1
+0	deadlock5.map	17	7	2	3	14	3	1
+0	deadlock5.map	17	7	1	4	13	4	1
+0	deadlock5.map	17	7	2	4	14	4	1
+0	deadlock5.map	17	7	3	4	15	4	1
+0	deadlock5.map	17	7	13	2	1	2	1
+0	deadlock5.map	17	7	14	2	2	2	1
+0	deadlock5.map	17	7	15	2	3	2	1
+0	deadlock5.map	17	7	13	3	1	3	1
+0	deadlock5.map	17	7	14	3	2	3	1
+0	deadlock5.map	17	7	13	4	1	4	1
+0	deadlock5.map	17	7	14	4	2	4	1
+0	deadlock5.map	17	7	15	4	3	4	1

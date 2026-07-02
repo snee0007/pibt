@@ -1,0 +1,17 @@
+map,N,pure,swap,counter
+four_rooms,20,65,67,67
+four_rooms,30,INVALID,INVALID,INVALID
+deadlock_test,20,25,INVALID,INVALID
+deadlock_test,30,FAIL,FAIL,FAIL
+demo_rooms,20,44,36,36
+demo_rooms,30,60,47,47
+three_rooms,20,INVALID,INVALID,INVALID
+three_rooms,30,INVALID,INVALID,INVALID
+full,20,72,99,99
+full,30,132,112,112
+two_entrance,20,16,20,20
+two_entrance,30,29,25,25
+crossing,20,30,23,23
+crossing,30,34,36,36
+room_corridor,20,27,26,26
+room_corridor,30,39,37,37

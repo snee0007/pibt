@@ -1,0 +1,10 @@
+{
+"H":11,"W":15,
+"grid":["@@@@@@@@@@@@@@@","@@...@@@@...@@@","@@...@@@@...@@@","@@...@@@@...@@@","@@@.@@@@@@.@@@@","@.............@","@@@.@@@@@@.@@@@","@@...@@@@...@@@","@@...@@@@...@@@","@@...@@@@...@@@","@@@@@@@@@@@@@@@"],
+"steps":[
+{"msg":"SUMMARY room 0: 9 cells, depth 1, parent -1, cap 9","detail":"room. depth=1, parent=-1, cap=9. Normal room - gates entry when full.","color":"room","roomid":0,"cells":[[1,2],[1,3],[1,4],[2,2],[2,3],[2,4],[3,2],[3,3],[3,4]]},
+{"msg":"SUMMARY room 1: 9 cells, depth 1, parent -1, cap 9","detail":"room. depth=1, parent=-1, cap=9. Normal room - gates entry when full.","color":"room","roomid":1,"cells":[[1,9],[1,10],[1,11],[2,9],[2,10],[2,11],[3,9],[3,10],[3,11]]},
+{"msg":"SUMMARY room 2: 23 cells, depth 1, parent -1, cap 23 [COMBINED]","detail":"COMBINED. depth=1, parent=-1, cap=23. Observation counter - counts but never blocks entry.","color":"phantom","roomid":2,"cells":[[1,2],[1,3],[1,4],[2,2],[2,3],[2,4],[3,2],[3,3],[3,4],[4,3],[5,1],[5,2],[5,3],[6,3],[7,2],[7,3],[7,4],[8,2],[8,3],[8,4],[9,2],[9,3],[9,4]]},
+{"msg":"SUMMARY room 3: 9 cells, depth 1, parent -1, cap 9","detail":"room. depth=1, parent=-1, cap=9. Normal room - gates entry when full.","color":"room","roomid":3,"cells":[[7,2],[7,3],[7,4],[8,2],[8,3],[8,4],[9,2],[9,3],[9,4]]},
+{"msg":"SUMMARY room 4: 9 cells, depth 1, parent -1, cap 9","detail":"room. depth=1, parent=-1, cap=9. Normal room - gates entry when full.","color":"room","roomid":4,"cells":[[7,9],[7,10],[7,11],[8,9],[8,10],[8,11],[9,9],[9,10],[9,11]]}
+]}

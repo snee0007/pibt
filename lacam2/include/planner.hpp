@@ -16,11 +16,17 @@ std::ostream& operator<<(std::ostream& os, const Objective objective);
 // Room capacity tracking
 struct RoomInfo {
   int id;
-  std::vector<int> cells;      // all cell indices in this room
-  std::vector<int> entrances;  // entrance cell indices
-  int capacity;                // max agents allowed
-  int current_count;           // agents inside right now
-  RoomInfo(int _id) : id(_id), capacity(0), current_count(0) {}
+  std::vector<int> cells;           // cells on the enclosed side of the cut
+  std::vector<int> corridor_cells;  // corridor cells that lead into this room
+  std::vector<int> entrances;       // non-corridor endpoint cells of the cut
+  int capacity;                     // max agents allowed in room+corridor
+  int current_count;                // agents in room+corridor right now
+  int num_doors;                    // number of entrance/door cells
+  int depth;                        // nesting depth (1=outermost)
+  bool is_combined;                 // true = overlap counter, not a parent
+  int parent;                       // id of containing room, -1 if root
+  int outside;                      // 1 = giant/outside side, never gates entry
+  RoomInfo(int _id) : id(_id), capacity(0), current_count(0), num_doors(0), depth(1), is_combined(false), parent(-1), outside(0) {}
 };
 
 // PIBT agent
@@ -114,11 +120,16 @@ struct Planner {
 
   // Room capacity system
   std::vector<RoomInfo> rooms;
-  std::vector<int> cell_to_room;  // maps cell id → room id (-1 if wall/corridor)
+  std::vector<int> cell_to_room;         // primary (innermost) room, -1 otherwise
+  std::vector<std::vector<int>> cell_to_rooms;  // ALL rooms a cell belongs to (nesting/overlap)
+  std::vector<int> corridor_to_room;     // corridor cells only, -1 otherwise
+  std::vector<int> cell_to_region_room;  // room+corridor cells, -1 otherwise
   void detect_rooms(int width, int height);
   bool approaching_full_room(Agent* ai);
+  int full_room_to_enter(Agent* ai);
   void update_room_counts();
   bool is_corridor(int vid) const;
+  int entry_room_for_move(Agent* ai, Vertex* to) const;
 
   // utilities
   template <typename... Body>

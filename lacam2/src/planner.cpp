@@ -1,5 +1,9 @@
 #include "../include/planner.hpp"
 #include <set>
+#include <array>
+static int g_fire_count = 0;
+static int g_fire_agent = -1;
+static int g_frozen_cap = 60;  // tunable: max frozen steps to wait while an agent is parked
 
 LNode::LNode(LNode* parent, uint i, Vertex* v)
     : who(), where(), depth(parent == nullptr ? 0 : parent->depth + 1)
@@ -111,6 +115,10 @@ Solution Planner::solve(std::string& additional_info)
   // reset to fractional part at goal. Survives across timesteps.
   std::vector<float> pri(N, 0.0f);
   bool pri_init = false;
+  std::vector<int> waiting_room(N, -1);
+  int frozen_count = 0;
+  { const char* fc=getenv("FROZEN_CAP"); if(fc) g_frozen_cap=atoi(fc); }
+  std::vector<float> orig_pri(N, 0.0f);
 
   while (!is_expired(deadline)) {
     loop_cnt++;
@@ -130,6 +138,21 @@ Solution Planner::solve(std::string& additional_info)
     }
 
     update_room_counts();
+#if defined(USE_ANDY) && !defined(NO_COUNTER)
+    if (loop_cnt >= 12 && loop_cnt <= 45 && !rooms.empty()) {
+      std::cout << "\n=== STEP " << loop_cnt << " | room0=" << rooms[0].current_count
+                << "/" << rooms[0].capacity << " ===\n  IN ROOM0: ";
+      for (uint i=0;i<N;i++){
+        bool inR=false; for(int rid:cell_to_rooms[A[i]->v_now->id]) if(rid==0) inR=true;
+        if(inR){ int gr=cell_to_room[ins->goals[i]->id];
+          std::cout<<"a"<<i<<"(pri"<<pri[i]<<",goal"<<(gr==0?"IN":"OUT")<<") "; }
+      }
+      std::cout << "\n  PARKED: ";
+      for (uint i=0;i<N;i++) if(waiting_room[i]>=0)
+        std::cout<<"a"<<i<<"(wants"<<waiting_room[i]<<",opri"<<orig_pri[i]<<",at"<<A[i]->v_now->id<<") ";
+      std::cout << "\n";
+    }
+#endif
 
     Config C_now(N);
     for (uint i = 0; i < N; ++i) C_now[i] = A[i]->v_now;
@@ -148,6 +171,27 @@ Solution Planner::solve(std::string& additional_info)
       }
     }
     for (uint pi = 0; pi < N; ++pi) H->priorities[pi] = pri[pi];
+#ifdef USE_ANDY
+    // ANDY: restore agents whose waited-for room now has space; else hold at -1
+    for (uint kk = 0; kk < N; ++kk) {
+      if (waiting_room[kk] >= 0) {
+        int rid = waiting_room[kk];
+        // (TEST) do NOT grow stored priority during park - restore exactly what it had
+        if (rid < (int)rooms.size() &&
+            rooms[rid].current_count < rooms[rid].capacity) {
+          // room freed up -> restore
+          pri[kk] = orig_pri[kk];
+          H->priorities[kk] = pri[kk];
+          std::cout << "[RESTORE] agent " << kk << " room " << rid
+                    << " freed (now " << rooms[rid].current_count << "/" << rooms[rid].capacity
+                    << ") at step " << loop_cnt << ", pri restored to " << pri[kk] << "\n";
+          waiting_room[kk] = -1;
+        } else {
+          H->priorities[kk] = -1.0f;  // still waiting
+        }
+      }
+    }
+#endif
 
     // ── PERSISTENT EXIT PRIORITY ─────────────────────────────────
     // Agent inside room with goal outside:
@@ -170,13 +214,37 @@ Solution Planner::solve(std::string& additional_info)
         else
           H->priorities[kk] = 999.0f + H->priorities[kk];
       }
-      // Room full → block entry
+      // Room full -> block entry
+#ifdef USE_ANDY
+#ifndef NO_COUNTER
+      // ANDY admission: if entering a full room, drop to -1, mark room, store orig priority
+      if (waiting_room[kk] < 0) {
+        int fr = full_room_to_enter(A[kk]);
+        if (fr >= 0) {
+          static int chits = 0; chits++;
+          if (chits<=5) std::cout << "[COUNTER][ANDY] agent " << kk
+                                  << " waits room " << fr << " step " << loop_cnt << "\n";
+          orig_pri[kk] = pri[kk];     // remember what it had
+          waiting_room[kk] = fr;      // mark which room
+          std::cout << "[PARK] agent " << kk << " -> waits room " << fr
+                    << " (cap " << rooms[fr].capacity << ", now " << rooms[fr].current_count
+                    << ") at step " << loop_cnt << ", orig_pri=" << orig_pri[kk] << "\n";
+          pri[kk] = -1.0f;
+          H->priorities[kk] = -1.0f;  // lowest, below goals
+        }
+      }
+#endif
+#else
       if (approaching_full_room(A[kk])) {
         static int chits = 0; chits++;
         if (chits<=5) std::cout << "[COUNTER] agent " << kk << " step " << loop_cnt << "\n";
         H->priorities[kk] = 0.0001f;
       }
+#endif
     }
+    if (loop_cnt>=107 && loop_cnt<=130 && rooms.size()>0)
+      std::cout << "[ROOM0] step " << loop_cnt << " count=" << rooms[0].current_count
+                << "/" << rooms[0].capacity << " agent22_waiting=" << waiting_room[22] << "\n";
     // Re-sort
     std::iota(H->order.begin(), H->order.end(), 0);
     std::sort(H->order.begin(), H->order.end(),
@@ -185,15 +253,65 @@ Solution Planner::solve(std::string& additional_info)
               });
     // ─────────────────────────────────────────────────────────────
 
-    for (auto k : H->order) {
-      auto* a = A[k];
-      if (a->v_next != nullptr) continue;
-      auto result = funcPIBT(a, a, H);
-      // Mike's priority swap, persisted so it matters next timestep
-      if (result.second != INT_MAX && result.second != -1) {
-        std::swap(pri[k], pri[(uint)result.second]);
-        std::swap(H->priorities[k], H->priorities[(uint)result.second]);
+    int p2_attempt = 0; bool p2_redo = true; int p2_prev_pair = -1;
+    bool p2_first = true;
+    while (p2_redo) {
+      p2_redo = false;
+      if (!p2_first)   // first pass already sorted above; only re-sort on Part 2 re-attempts
+        std::sort(H->order.begin(), H->order.end(),
+                  [&](uint i, uint j){ return H->priorities[i] > H->priorities[j]; });
+      p2_first = false;
+      for (auto k : H->order) {
+        auto* a = A[k];
+        if (a->v_next != nullptr) continue;
+        auto result = funcPIBT(a, a, H);
+#ifndef NO_SWAP
+        if (result.second != INT_MAX && result.second != -1) {
+          std::cout << "[MIKE-SWAP] step " << loop_cnt << ": agent " << k
+                    << " (pri " << H->priorities[k] << ") was blocked, swapping priority with blocker agent "
+                    << result.second << " (pri " << H->priorities[(uint)result.second]
+                    << ") -> blocker promoted to move first\n";
+          std::swap(pri[k], pri[(uint)result.second]);
+          std::swap(H->priorities[k], H->priorities[(uint)result.second]);
+        }
+#endif
       }
+#if defined(USE_ANDY) && !defined(NO_COUNTER) && !defined(NO_PART2)
+      if (p2_attempt < 30) {
+        int stuck = -1; float bestp = -1e9;
+        for (uint i = 0; i < N; ++i) {
+          if (A[i]->v_now != A[i]->v_next) continue;
+          if (A[i]->v_now == ins->goals[i]) continue;
+          int rid = cell_to_room[A[i]->v_now->id];
+          if (rid < 0) continue;
+          if (H->priorities[i] > bestp) { bestp = H->priorities[i]; stuck = (int)i; }
+        }
+        if (stuck >= 0) {
+          int rid = cell_to_room[A[stuck]->v_now->id];
+          int promote = -1; float bp = -1e9;
+          for (uint j = 0; j < N; ++j) {
+            if (cell_to_room[A[j]->v_now->id] != rid) continue;
+            if (cell_to_room[ins->goals[j]->id] == rid) continue;
+            if ((int)j == stuck) continue;
+            if (H->priorities[j] > bp) { bp = H->priorities[j]; promote = (int)j; }
+          }
+          int pair = stuck*100000 + promote;
+          if (promote >= 0 && pair != p2_prev_pair) {
+            std::swap(pri[stuck], pri[promote]);
+            std::swap(H->priorities[stuck], H->priorities[promote]);
+            p2_prev_pair = pair; p2_attempt++;
+            for (auto* a : A) {
+              if (a->v_next != nullptr) { occupied_next[a->v_next->id] = nullptr; a->v_next = nullptr; }
+            }
+            if (p2_attempt <= 3)
+              std::cout << "[PART2] promote agent " << promote << " over " << stuck
+                        << " in room " << rid << " step " << loop_cnt
+                        << " (attempt " << p2_attempt << ")\n";
+            p2_redo = true;
+          }
+        }
+      }
+#endif
     }
 
     Config C_new(N);
@@ -203,9 +321,16 @@ Solution Planner::solve(std::string& additional_info)
     }
 
     if (C_new == solution.back()) {
+#if defined(USE_ANDY) && !defined(NO_COUNTER)
+      bool parked=false; for(uint i=0;i<N;i++) if(waiting_room[i]>=0){parked=true;break;}
+
+      if(parked && ++frozen_count<g_frozen_cap){ solution.push_back(C_new); goto after_dl_break; }
+      frozen_count=0;
+#endif
       solver_info(1, "deadlock at step ", loop_cnt);
       break;
     }
+    after_dl_break:;
 
     // Show first 25 steps
     if (loop_cnt <= 25) {
@@ -222,6 +347,29 @@ Solution Planner::solve(std::string& additional_info)
 
 
     solution.push_back(C_new);
+#if defined(USE_ANDY) && !defined(NO_COUNTER)
+    {
+      static std::ofstream vdump; static bool vinit=false;
+      if(!vinit){
+        vdump.open("/tmp/live_viz.txt", std::ios::out);
+        int Wd=ins->G.width;
+        vdump<<"goals:";
+        for(uint i=0;i<N;i++){int k=ins->goals[i]->index; vdump<<(k%Wd)<<","<<(k/Wd)<<";";}
+        vdump<<"\nroom0:";
+        if(!rooms.empty()) for(int cid:rooms[0].cells){int ix=(int)ins->G.V[cid]->index; vdump<<(ix%Wd)<<","<<(ix/Wd)<<";";}
+        vdump<<"\n"; vinit=true;
+      }
+      int Wd=ins->G.width;
+      vdump<<loop_cnt<<"|pos:";
+      for(auto* a:A){int k=a->v_now->index; vdump<<(k%Wd)<<","<<(k/Wd)<<";";}
+      vdump<<"|pri:";
+      for(uint i=0;i<N;i++) vdump<<pri[i]<<";";
+      vdump<<"|fires:"<<g_fire_count<<";agent:"<<g_fire_agent;
+      g_fire_count=0; g_fire_agent=-1;
+      vdump<<"\n"; vdump.flush();
+      if(loop_cnt>300){ solver_info(1,"viz cap"); break; }
+    }
+#endif
 
     // FIX: clear ALL old cells first, THEN occupy new ones.
     // Interleaved clear/set corrupted occupied_now for chained moves.
@@ -345,158 +493,291 @@ bool Planner::is_corridor(int vid) const
   return ins->G.V[vid]->neighbor.size() <= 2;
 }
 
+#ifndef USE_ANDY
 void Planner::detect_rooms(int width, int height)
 {
+  const int W = (int)ins->G.width, H = (int)ins->G.height;
   cell_to_room.assign(V_size, -1);
+  cell_to_rooms.assign(V_size, {});
   rooms.clear();
 
-  auto deg = [&](int v){ return (int)ins->G.V[v]->neighbor.size(); };
+  auto& V = ins->G.V;
+  int n = (int)V_size;
 
-  // ============================================================
-  // EXACT ROOM DETECTION via single-cut test.
-  // Definition: a "room" is a maximal region whose ONLY connection
-  // to the rest of the map is through one corridor cell (a graph cut).
-  // Regions with 2+ connections are open/through-space, not rooms.
-  // ============================================================
+  // ---- iterative Tarjan: articulation points + biconnected components ----
+  std::vector<int> disc(n,0), low(n,0); int timer=0;
+  std::vector<bool> isArt(n,false);
+  std::vector<std::pair<int,int>> estk;
+  std::vector<std::vector<int>> bccs;
 
-  // STEP 1: classify every cell as WIDE (deg>=3) or THIN (deg<=2).
-  // THIN cells are corridor candidates; WIDE cells are interior.
-
-  // STEP 2: cluster WIDE cells into regions by flooding through WIDE cells
-  // AND through THIN cells, but we will cut at thin "necks". To get exact
-  // regions we instead flood the WHOLE free space but record, for each
-  // region, the thin cells that act as its connectors.
-  //
-  // Practical exact method: for every THIN cell, test if it is a CUT
-  // (its removal disconnects its neighbours). Collect cut cells. Then
-  // remove all cut cells; the free space breaks into components; each
-  // small component reachable through exactly ONE cut cell is a room.
-
-  int N = (int)V_size;
-
-  // --- find articulation: a thin cell is a "door" if removing it
-  //     disconnects the local neighbourhood (its open neighbours can no
-  //     longer reach each other without passing through it). ---
-  auto reachable_without = [&](int a, int b, int blocked)->bool{
-    if (a==blocked||b==blocked) return false;
-    std::vector<char> seen(N,0);
-    std::queue<int> q; q.push(a); seen[a]=1;
-    while(!q.empty()){
-      int c=q.front(); q.pop();
-      if(c==b) return true;
-      for(auto* nb:ins->G.V[c]->neighbor){
-        int n=(int)nb->id;
-        if(n==blocked||seen[n]) continue;
-        seen[n]=1; q.push(n);
+  for (int s=0; s<n; ++s) {
+    if (disc[s]) continue;
+    std::vector<std::array<int,3>> st; st.push_back({s,-1,0});
+    disc[s]=low[s]=++timer;
+    std::vector<int> cnt(n,0);
+    while(!st.empty()){
+      int u=st.back()[0], parent=st.back()[1]; int& idx=st.back()[2];
+      if(idx < (int)V[u]->neighbor.size()){
+        int v=(int)V[u]->neighbor[idx]->id; idx++;
+        if(v==parent) continue;
+        if(!disc[v]){ estk.push_back({u,v}); cnt[u]++; disc[v]=low[v]=++timer; st.push_back({v,u,0}); }
+        else if(disc[v]<disc[u]){ estk.push_back({u,v}); low[u]=std::min(low[u],disc[v]); }
+      } else {
+        st.pop_back();
+        if(!st.empty()){
+          int p=st.back()[0]; low[p]=std::min(low[p],low[u]); int pp=st.back()[1];
+          if((pp!=-1&&low[u]>=disc[p])||(pp==-1&&cnt[p]>1)){
+            isArt[p]=true;
+            std::set<int> comp;
+            while(!estk.empty()){auto e=estk.back();estk.pop_back();
+              comp.insert(e.first);comp.insert(e.second);
+              if(e.first==p&&e.second==u)break;}
+            bccs.push_back(std::vector<int>(comp.begin(),comp.end()));
+          }
+        }
       }
     }
-    return false;
-  };
-
-  // A thin cell is a DOOR if it has two open neighbours that cannot reach
-  // each other when it is removed.
-  std::vector<char> is_door(N,0);
-  for(int c=0;c<N;c++){
-    if(deg(c)>2) continue;             // doors are thin
-    auto& nb=ins->G.V[c]->neighbor;
-    bool door=false;
-    for(size_t a=0;a<nb.size()&&!door;a++)
-      for(size_t b=a+1;b<nb.size()&&!door;b++)
-        if(!reachable_without((int)nb[a]->id,(int)nb[b]->id,c)) door=true;
-    is_door[c]=door;
+    if(!estk.empty()){std::set<int>comp;while(!estk.empty()){auto e=estk.back();estk.pop_back();comp.insert(e.first);comp.insert(e.second);}bccs.push_back(std::vector<int>(comp.begin(),comp.end()));}
   }
 
-  // STEP 3: remove all door cells; flood the remaining free space into
-  // components. Each component's "exits" = the door cells adjacent to it.
-  std::vector<int> comp(N,-1);
-  int ncomp=0;
-  for(int s=0;s<N;s++){
-    if(is_door[s]||comp[s]>=0) continue;
-    std::vector<int> cells; std::queue<int> q;
-    q.push(s); comp[s]=ncomp;
-    while(!q.empty()){
-      int c=q.front(); q.pop(); cells.push_back(c);
-      for(auto* nb:ins->G.V[c]->neighbor){
-        int n=(int)nb->id;
-        if(is_door[n]||comp[n]>=0) continue;
-        comp[n]=ncomp; q.push(n);
-      }
+  auto rc = [&](int cid){ int idx=(int)V[cid]->index; return std::make_pair(idx/W, idx%W); };
+  auto has2x2 = [&](std::vector<int>& comp){
+    std::set<std::pair<int,int>> s; for(int i:comp) s.insert(rc(i));
+    for(int i:comp){ auto p=rc(i); int r=p.first,c=p.second;
+      if(s.count({r,c})&&s.count({r+1,c})&&s.count({r,c+1})&&s.count({r+1,c+1})) return true; }
+    return false; };
+  auto border = [&](std::vector<int>& comp){
+    for(int i:comp){ auto p=rc(i); if(p.first==0||p.first==H-1||p.second==0||p.second==W-1) return true; }
+    return false; };
+
+  int rid=0;
+  for(auto& comp : bccs){
+    if(!has2x2(comp)) continue;       // non-1-wide rule
+    if(border(comp)) continue;        // outside
+    int arts=0; for(int i:comp) if(isArt[i]) arts++;
+    RoomInfo room(rid);
+    for(int i:comp){
+      room.cells.push_back(i);
+      cell_to_rooms[i].push_back(rid);
+      if(cell_to_room[i]<0) cell_to_room[i]=rid;
+      if(isArt[i]) room.entrances.push_back(i);
     }
-    ncomp++;
+    room.num_doors = arts;
+    room.capacity = (int)room.cells.size();
+    room.current_count = 0;
+    rooms.push_back(room);
+    rid++;
   }
 
-  // gather each component's cells and its set of adjacent doors
-  std::vector<std::vector<int>> comp_cells(ncomp);
-  std::vector<std::set<int>> comp_doors(ncomp);
-  for(int c=0;c<N;c++){
-    if(comp[c]<0) continue;
-    comp_cells[comp[c]].push_back(c);
-    for(auto* nb:ins->G.V[c]->neighbor)
-      if(is_door[(int)nb->id]) comp_doors[comp[c]].insert((int)nb->id);
-  }
-
-  // STEP 4: classify. A component is a ROOM iff it connects to the rest
-  // of the map through exactly ONE door. Report the exit distribution.
-  std::map<int,int> exit_hist;
-  int room_id=0, biggest=-1; size_t bigsz=0;
-  for(int k=0;k<ncomp;k++){
-    if(comp_cells[k].size()>bigsz){ bigsz=comp_cells[k].size(); biggest=k; }
-  }
-  for(int k=0;k<ncomp;k++){
-    int exits=(int)comp_doors[k].size();
-    exit_hist[exits]++;
-    // the largest component is the open map; never a room
-    if(k==biggest) continue;
-    // a sealed component is only a ROOM if it has real interior (a wide cell).
-    // all-thin components are hallway fragments, not rooms.
-    bool has_interior=false;
-    for(int c:comp_cells[k]) if(deg(c)>=3){ has_interior=true; break; }
-    if(exits==1 && has_interior){
-      RoomInfo room(room_id);
-      for(int c:comp_cells[k]){ room.cells.push_back(c); cell_to_room[c]=room_id; }
-      for(int d:comp_doors[k]) room.corridor_cells.push_back(d);
-      room.entrances.push_back(*comp_doors[k].begin());
-      room.capacity=(int)room.cells.size();
-      room.current_count=0;
-      rooms.push_back(room);
-      room_id++;
-    }
-  }
-
-  std::cout << "[STRUCT] components=" << ncomp << " exit distribution: ";
-  for(auto& kv:exit_hist) std::cout << kv.second << "x(" << kv.first << "exit) ";
-  std::cout << "\n";
-  std::cout << "[ROOM] Detected " << rooms.size() << " sealed rooms (exactly 1 exit)\n";
-  for(auto& r:rooms)
+  std::cout << "[ROOM] Detected " << rooms.size() << " rooms\n";
+  for(auto& r : rooms)
     std::cout << "[ROOM]   Room " << r.id << ": " << r.cells.size()
-              << " cells, capacity=" << r.capacity
-              << ", entrances=" << r.entrances.size() << "\n";
+              << " cells, doors=" << r.num_doors << ", cap=" << r.capacity << "\n";
 }
+#endif
+
+#ifdef USE_ANDY
+void Planner::detect_rooms(int width, int height)
+{
+  const int W = (int)ins->G.width;
+  cell_to_room.assign(V_size, -1);
+  cell_to_rooms.assign(V_size, {});
+  rooms.clear();
+  auto& V = ins->G.V;
+
+  auto rc = [&](int id){ int idx=(int)V[id]->index; return std::make_pair(idx/W, idx%W); };
+  auto deg = [&](int id){ return (int)V[id]->neighbor.size(); };
+
+  // reach test: can a's neighbours reach each other with cell `bl` removed
+  auto reach = [&](int a, int b, int bl){
+    if(a==bl||b==bl) return false;
+    std::set<int> seen={a}; std::vector<int> st={a};
+    while(!st.empty()){int x=st.back();st.pop_back(); if(x==b)return true;
+      for(auto* nb:V[x]->neighbor){int y=(int)nb->id; if(y!=bl&&!seen.count(y)){seen.insert(y);st.push_back(y);}}}
+    return false; };
+  auto floodBlk = [&](int s, std::set<int>& bl){
+    std::set<int> seen; if(bl.count(s))return seen; seen.insert(s); std::vector<int> st={s};
+    while(!st.empty()){int x=st.back();st.pop_back();
+      for(auto* nb:V[x]->neighbor){int y=(int)nb->id; if(!bl.count(y)&&!seen.count(y)){seen.insert(y);st.push_back(y);}}}
+    return seen; };
+
+  // thin cells = degree <= 2
+  std::set<int> thin;
+  for(auto* v:V) if(deg((int)v->id)<=2) thin.insert((int)v->id);
+
+  // group thin cells into chains, andy method
+  std::vector<std::set<int>> roomsets;
+  std::vector<int> roomOutside;  // 1 = giant/outside side (don't gate entry)
+  std::set<int> seent;
+  for(int s : thin){
+    if(seent.count(s)) continue;
+    std::set<int> ch={s}; seent.insert(s); std::vector<int> st={s};
+    while(!st.empty()){int x=st.back();st.pop_back();
+      for(auto* nb:V[x]->neighbor){int y=(int)nb->id; if(thin.count(y)&&!ch.count(y)){ch.insert(y);seent.insert(y);st.push_back(y);}}}
+    std::set<int> eps;
+    for(int cc:ch) for(auto* nb:V[cc]->neighbor){int y=(int)nb->id; if(!thin.count(y))eps.insert(y);}
+    if(eps.size()!=2) continue;
+    auto it=eps.begin(); int a=*it++; int b=*it;
+    std::set<int> chset(ch.begin(),ch.end());
+    auto ra=floodBlk(a,chset);
+    if(!ra.count(b)){ auto rb=floodBlk(b,chset);
+      // INNER side = the side NOT touching the map outer boundary
+      auto touchesOut=[&](std::set<int>& reg){
+        for(int cid:reg){ int idx=(int)V[cid]->index; int rr=idx/W, ccc=idx%W;
+          if(rr==0||ccc==0||rr==(int)ins->G.height-1||ccc==W-1) return true; }
+        return false; };
+      bool aOut=touchesOut(ra), bOut=touchesOut(rb);
+      // DOUBLE-SIDED: keep BOTH sides. Tag the side the old picker would DROP as outside.
+      int realIsA;
+      if(aOut&&!bOut) realIsA=0;        // ra touches outside -> rb real
+      else if(bOut&&!aOut) realIsA=1;   // rb touches outside -> ra real
+      else realIsA=(ra.size()<=rb.size())?1:0;  // neither/both -> smaller real
+      if(realIsA){ roomsets.push_back(ra); roomOutside.push_back(0);
+                   roomsets.push_back(rb); roomOutside.push_back(1); }
+      else { roomsets.push_back(rb); roomOutside.push_back(0);
+             roomsets.push_back(ra); roomOutside.push_back(1); } }
+  }
+
+  int R=(int)roomsets.size();
+  std::vector<std::set<int>> exits(R);
+  for(int i=0;i<R;i++)
+    for(int cid:roomsets[i])
+      for(auto* nb:V[cid]->neighbor){int y=(int)nb->id;
+        if(!roomsets[i].count(y)) exits[i].insert(y);}
+  std::vector<int> parent(R,-1);
+  std::vector<bool> combined(R,false);
+  for(int i=0;i<R;i++){
+    int best=-1;
+    for(int j=0;j<R;j++){
+      if(i==j||roomsets[j].size()<=roomsets[i].size())continue;
+      bool contains=true; for(int p:roomsets[i]) if(!roomsets[j].count(p)){contains=false;break;}
+      if(!contains)continue;
+      if(best<0||roomsets[j].size()<roomsets[best].size()) best=j;  // pure containment
+    }
+    parent[i]=best;
+  }
+  // room j is COMBINED if it contains 2+ rooms that are DISJOINT from each other
+  // (it spans separate peer rooms, e.g. rooms+hallway merged) -> not a true parent.
+  for(int j=0;j<R;j++){
+    std::vector<int> contained;
+    for(int i=0;i<R;i++){
+      if(i==j||roomsets[j].size()<=roomsets[i].size())continue;
+      bool contains=true; for(int p:roomsets[i]) if(!roomsets[j].count(p)){contains=false;break;}
+      if(contains) contained.push_back(i);
+    }
+    // check for a disjoint pair among contained rooms
+    for(size_t a=0;a<contained.size()&&!combined[j];a++)
+      for(size_t b=a+1;b<contained.size()&&!combined[j];b++){
+        bool overlap=false;
+        for(int p:roomsets[contained[a]]) if(roomsets[contained[b]].count(p)){overlap=true;break;}
+        if(!overlap) combined[j]=true;   // two disjoint rooms inside j -> combined
+      }
+  }
+  // a combined room is NOT a true parent: clear it from parent[]
+  std::vector<int> depth(R,1);
+  for(int i=0;i<R;i++){int d=1,p=parent[i]; while(p>=0){d++;p=parent[p];} depth[i]=d;}
+
+  for(int i=0;i<R;i++){
+    RoomInfo room(i);
+    for(int cid:roomsets[i]){
+      room.cells.push_back(cid);
+      cell_to_rooms[cid].push_back(i);
+      if(cell_to_room[cid]<0) cell_to_room[cid]=i;  // primary; refined below
+    }
+    room.capacity = (int)roomsets[i].size();
+    room.current_count = 0;
+    room.depth = depth[i];
+    room.is_combined = combined[i];
+    room.parent = parent[i];
+    room.outside = roomOutside[i];
+    rooms.push_back(room);
+  }
+  // primary room per cell = DEEPEST (highest depth) room it belongs to
+  for(int cid=0; cid<(int)V_size; ++cid){
+    int best=-1, bd=-1;
+    for(int rid : cell_to_rooms[cid]) if(rooms[rid].depth>bd){bd=rooms[rid].depth;best=rid;}
+    cell_to_room[cid]=best;
+  }
+
+  std::cout << "[ROOM][ANDY] Detected " << rooms.size() << " rooms\n";
+  for(auto& r : rooms)
+    std::cout << "[ROOM]   Room " << r.id << ": " << r.cells.size()
+              << " cells, depth=" << r.depth << ", parent=" << r.parent
+              << ", cap=" << r.capacity << (r.is_combined?" [COMBINED]":"") << (r.outside?" [OUTSIDE]":"") << "\n";
+  // dump rooms to file for the visualizer (x,y per cell)
+  {
+    std::ofstream rf("rooms.txt", std::ios::out);
+    int Wd = ins->G.width;
+    for(auto& r : rooms){
+      rf << "room " << r.id << " cap " << r.capacity
+         << " outside " << r.outside << " combined " << (r.is_combined?1:0)
+         << " depth " << r.depth << " cells";
+      for(int cid : r.cells){ int idx=(int)V[cid]->index; rf << " " << (idx%Wd) << "," << (idx/Wd); }
+      rf << "\n";
+    }
+  }
+}
+#endif
+
 
 void Planner::update_room_counts()
 {
   for (auto& r : rooms) r.current_count = 0;
   for (auto* a : A) {
     if (a->v_now == nullptr) continue;
+#ifdef USE_ANDY
+    // CASCADE: count agent into EVERY room its cell belongs to
+    for (int rid : cell_to_rooms[a->v_now->id])
+      if (rid >= 0 && rid < (int)rooms.size())
+        rooms[rid].current_count++;
+#else
     int rid = cell_to_room[a->v_now->id];
     if (rid >= 0 && rid < (int)rooms.size())
       rooms[rid].current_count++;
+#endif
   }
 }
 
 bool Planner::approaching_full_room(Agent* ai)
 {
-  if (rooms.empty() || ai->v_now == nullptr) return false;
+  return full_room_to_enter(ai) >= 0;
+}
+// Returns the id of a full room the agent would ENTER (it is currently outside),
+// or -1 if none. Under USE_ANDY this checks ALL rooms each neighbour belongs to.
+int Planner::full_room_to_enter(Agent* ai)
+{
+  if (rooms.empty() || ai->v_now == nullptr) return -1;
+#ifdef USE_ANDY
+  // agent must not already be inside the room it's about to enter
+  for (auto* nb : ai->v_now->neighbor) {
+    for (int rid : cell_to_rooms[nb->id]) {
+      if (rid < 0) continue;
+      // skip rooms the agent is already in (not "entering")
+      bool already = false;
+      for (int mine : cell_to_rooms[ai->v_now->id]) if (mine == rid) already = true;
+      if (already) continue;
+      if (rooms[rid].is_combined) continue;   // combined = observation counter, not a gate
+      if (rooms[rid].outside) continue;       // giant/outside side = never gates entry
+      if (rooms[rid].current_count >= rooms[rid].capacity) {
+        g_fire_count++; g_fire_agent = (int)ai->id;
+        std::cout << "[ADMIT] agent " << (int)ai->id << " at " << ai->v_now->id
+                  << " BLOCKED entering room " << rid << " ("
+                  << rooms[rid].current_count << "/" << rooms[rid].capacity << ")\n";
+        return rid; }
+    }
+  }
+  return -1;
+#else
   int current_room = cell_to_room[ai->v_now->id];
-  if (current_room >= 0) return false;
+  if (current_room >= 0) return -1;
   for (auto* nb : ai->v_now->neighbor) {
     int rid = cell_to_room[nb->id];
     if (rid < 0) continue;
-    if (rooms[rid].current_count >= rooms[rid].capacity) return true;
+    if (rooms[rid].current_count >= rooms[rid].capacity) return rid;
   }
-  return false;
+  return -1;
+#endif
 }
-
 std::pair<bool, int> Planner::funcPIBT(Agent* ai, Agent* root, HNode* H)
 {
   const auto i = ai->id;

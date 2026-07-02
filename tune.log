@@ -1,0 +1,7 @@
+nohup: ignoring input
+cap=10 -> 860 solved (10s)
+cap=40 -> 860 solved (10s)
+cap=60 -> 860 solved (9s)
+cap=100 -> 860 solved (10s)
+cap=150 -> 860 solved (11s)
+=== DONE - frozen_tuning.csv ===
