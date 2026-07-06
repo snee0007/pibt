@@ -588,6 +588,7 @@ void Planner::detect_rooms(int width, int height)
   const int W = (int)ins->G.width;
   cell_to_room.assign(V_size, -1);
   cell_to_rooms.assign(V_size, {});
+  corridor_to_room.assign(V_size, -1);
   rooms.clear();
   auto& V = ins->G.V;
 
@@ -707,6 +708,8 @@ void Planner::detect_rooms(int width, int height)
     room.capacity = (int)roomsets[i].size();
     room.current_count = 0;
     for(int cid:roomChain[i]) room.corridor_cells.push_back(cid);
+    // corridor cell -> REAL room id (only real rooms gate; one real room per cut)
+    if(!roomOutside[i]) for(int cid:roomChain[i]) corridor_to_room[cid]=i;
     room.room_counter = roomCtrCell[i];
     room.rc_counter = rcCtrCell[i];
     room.rc_capacity = room.capacity + (int)room.corridor_cells.size();
@@ -776,23 +779,27 @@ int Planner::full_room_to_enter(Agent* ai)
 {
   if (rooms.empty() || ai->v_now == nullptr) return -1;
 #ifdef USE_ANDY
-  // agent must not already be inside the room it's about to enter
+  // ANDY SPEC: gate when the agent would ENTER a corridor leading to a full room,
+  // and the agent is not already in that corridor.
+  // Target room decided by the agent's GOAL:
+  //   goal inside the room  -> heading in  -> gate applies
+  //   goal in corridor      -> allowed (corridor-goal exception)
+  //   goal elsewhere        -> exiting/passing -> never gate
+  int goal_id = (int)ins->goals[ai->id]->id;
   for (auto* nb : ai->v_now->neighbor) {
-    for (int rid : cell_to_rooms[nb->id]) {
-      if (rid < 0) continue;
-      // skip rooms the agent is already in (not "entering")
-      bool already = false;
-      for (int mine : cell_to_rooms[ai->v_now->id]) if (mine == rid) already = true;
-      if (already) continue;
-      if (rooms[rid].is_combined) continue;   // combined = observation counter, not a gate
-      if (rooms[rid].outside) continue;       // giant/outside side = never gates entry
-      if (rooms[rid].current_count >= rooms[rid].capacity) {
-        g_fire_count++; g_fire_agent = (int)ai->id;
-        std::cout << "[ADMIT] agent " << (int)ai->id << " at " << ai->v_now->id
-                  << " BLOCKED entering room " << rid << " ("
-                  << rooms[rid].current_count << "/" << rooms[rid].capacity << ")\n";
-        return rid; }
-    }
+    int rid = corridor_to_room[nb->id];          // real room this corridor leads to
+    if (rid < 0) continue;                        // nb not a corridor cell
+    if (corridor_to_room[ai->v_now->id] == rid) continue;  // already in that corridor
+    if (rooms[rid].is_combined) continue;
+    bool goal_in_room = false;
+    for (int g : cell_to_rooms[goal_id]) if (g == rid) { goal_in_room = true; break; }
+    if (!goal_in_room) continue;                  // exiting / corridor-goal / passing
+    if (rooms[rid].current_count >= rooms[rid].capacity) {
+      g_fire_count++; g_fire_agent = (int)ai->id;
+      std::cout << "[ADMIT] agent " << (int)ai->id << " at " << ai->v_now->id
+                << " BLOCKED entering corridor of room " << rid << " ("
+                << rooms[rid].current_count << "/" << rooms[rid].capacity << ")\n";
+      return rid; }
   }
   return -1;
 #else
