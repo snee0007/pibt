@@ -15,9 +15,11 @@ int main(int c,char**v){
    for(auto&p:reg)for(auto&y:m.nbr[p])
      if(y.first==0||y.second==0||y.first==m.H-1||y.second==m.W-1)return true;
    return false;};
- // ANDY chain method -> roomsets
  vector<set<pair<int,int>>> rooms;
  std::vector<int> outsideTag;
+ vector<set<pair<int,int>>> roomCorridor;
+ vector<pair<int,int>> roomCtr;   // ROOM counter (near door)
+ vector<pair<int,int>> rcCtr;     // RC counter (far/corridor mouth)
  set<pair<int,int>> seent;
  for(auto&s:thin){
    if(seent.count(s))continue;
@@ -30,26 +32,33 @@ int main(int c,char**v){
      auto it=eps.begin();auto a=*it++;auto b=*it;
      auto ra=flood(a,ch);
      if(!ra.count(b)){auto rb=flood(b,ch);
-       // DOUBLE-SIDED: keep BOTH sides. Tag using OLD single-sided picker:
-       // the side the old rule would KEEP is "real" (outside=0), the other is "outside".
        bool aO=touchesOut(ra), bO=touchesOut(rb);
-       int realIsA;  // 1 = ra is the real room, 0 = rb is
-       if(aO&&!bO) realIsA=0;        // ra touches outside -> rb is real
-       else if(bO&&!aO) realIsA=1;   // rb touches outside -> ra is real
-       else realIsA=(ra.size()<=rb.size())?1:0;  // neither/both -> smaller is real
-       if(realIsA){ rooms.push_back(ra); outsideTag.push_back(0);
-                    rooms.push_back(rb); outsideTag.push_back(1); }
-       else { rooms.push_back(rb); outsideTag.push_back(0);
-              rooms.push_back(ra); outsideTag.push_back(1); }}
+       int realIsA;
+       if(aO&&!bO) realIsA=0;
+       else if(bO&&!aO) realIsA=1;
+       else realIsA=(ra.size()<=rb.size())?1:0;
+       auto chainNext=[&](pair<int,int> pt)->pair<int,int>{
+         for(auto&y:m.nbr[pt])if(ch.count(y))return y; return pt; };
+       // For the REAL room:
+       //   room counter = chain cell next to REAL room's endpoint (near door)
+       //   rc counter   = the OTHER (outside) endpoint (far / corridor mouth)
+       // The outside room gets the mirrored pair (mostly dead, shown for completeness).
+       if(realIsA){
+         // ra real (endpoint a), rb outside (endpoint b)
+         rooms.push_back(ra); outsideTag.push_back(0); roomCorridor.push_back(ch);
+           roomCtr.push_back(chainNext(a)); rcCtr.push_back(b);
+         rooms.push_back(rb); outsideTag.push_back(1); roomCorridor.push_back(ch);
+           roomCtr.push_back(chainNext(b)); rcCtr.push_back(a);
+       } else {
+         rooms.push_back(rb); outsideTag.push_back(0); roomCorridor.push_back(ch);
+           roomCtr.push_back(chainNext(b)); rcCtr.push_back(a);
+         rooms.push_back(ra); outsideTag.push_back(1); roomCorridor.push_back(ch);
+           roomCtr.push_back(chainNext(a)); rcCtr.push_back(b);
+       }
+     }
    }
  }
  int R=rooms.size();
- // exits[i] = cells just outside room i
- vector<set<pair<int,int>>> exits(R);
- for(int i=0;i<R;i++)
-   for(auto&cid:rooms[i])
-     for(auto&y:m.nbr[cid]) if(!rooms[i].count(y)) exits[i].insert(y);
- // TRUE parent: j contains all of i's cells AND all of i's exits land inside j
  vector<int> parent(R,-1);
  for(int i=0;i<R;i++){int best=-1;
    for(int j=0;j<R;j++){ if(i==j||rooms[j].size()<=rooms[i].size())continue;
@@ -65,11 +74,9 @@ int main(int c,char**v){
      if(!ov)combined[j]=true; } }
  vector<int> depth(R,1);
  for(int i=0;i<R;i++){int d=1,p=parent[i]; while(p>=0){d++;p=parent[p];} depth[i]=d;}
- // TAGS for visualization filtering (data kept either way)
  std::vector<int> outside=outsideTag, dup(R,0);
  for(int i=0;i<R;i++) for(int j=0;j<i;j++)
    if(rooms[i].size()==rooms[j].size() && rooms[i]==rooms[j]){ dup[i]=1; break; }
- // JSON
  printf("{\n\"H\":%d,\"W\":%d,\n\"grid\":[",m.H,m.W);
  for(int r=0;r<m.H;r++){printf("\"");for(int cc=0;cc<m.W;cc++)printf("%c",(cc<(int)m.g[r].size()&&m.g[r][cc]=='.')?'.':'@');printf("\"%s",r==m.H-1?"":",");}
  printf("],\n\"steps\":[\n");
@@ -77,15 +84,19 @@ int main(int c,char**v){
  for(int i=0;i<R;i++){
    if(!first)printf(",\n");first=false;
    string col = combined[i]?"phantom":(depth[i]==1?"room":(depth[i]==2?"room2":"phantom"));
-   const char* kind = combined[i]?"COMBINED":"room";
+   int rccap=(int)(rooms[i].size()+roomCorridor[i].size());
    printf("{\"msg\":\"SUMMARY room %d: %d cells, depth %d, parent %d, cap %d%s\",",
      i,(int)rooms[i].size(),depth[i],parent[i],(int)rooms[i].size(),combined[i]?" [COMBINED]":"");
-   printf("\"detail\":\"%s. depth=%d, parent=%d, cap=%d. %s\",",
-     kind,depth[i],parent[i],(int)rooms[i].size(),
-     combined[i]?"Observation counter - counts but never blocks entry.":"Normal room - gates entry when full.");
+   printf("\"detail\":\"room cap=%d (counter[%d,%d]), rc cap=%d (counter[%d,%d]). %s\",",
+     (int)rooms[i].size(),roomCtr[i].first,roomCtr[i].second,
+     rccap,rcCtr[i].first,rcCtr[i].second,
+     outside[i]?"OUTSIDE - counters ~dead (huge cap).":"REAL room.");
    printf("\"outside\":%d,\"dup\":%d,",outside[i],dup[i]);
+   printf("\"rccap\":%d,",rccap);
+   printf("\"roomctr\":[%d,%d],\"rcctr\":[%d,%d],",roomCtr[i].first,roomCtr[i].second,rcCtr[i].first,rcCtr[i].second);
+   printf("\"corridor\":["); bool f=1;for(auto&p:roomCorridor[i]){printf("%s[%d,%d]",f?"":",",p.first,p.second);f=0;}printf("],");
    printf("\"color\":\"%s\",\"roomid\":%d,\"cells\":[",col.c_str(),i);
-   bool f=true;for(auto&p:rooms[i]){printf("%s[%d,%d]",f?"":",",p.first,p.second);f=false;}printf("]}");
+   f=1;for(auto&p:rooms[i]){printf("%s[%d,%d]",f?"":",",p.first,p.second);f=0;}printf("]}");
  }
  printf("\n]}\n");
 }

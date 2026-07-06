@@ -1,0 +1,7 @@
+{
+"H":7,"W":17,
+"grid":["@@@@@@@@@@@@@@@@@","@@@@@@@@@@@@@@@@@","@...@@@@@@@@@...@","@...............@","@...@@@@@@@@@...@","@@@@@@@@@@@@@@@@@","@@@@@@@@@@@@@@@@@"],
+"steps":[
+{"msg":"SUMMARY room 0: 9 cells, depth 1, parent -1, cap 9","detail":"room cap=9 (counter[3,4]), rc cap=18 (counter[3,13]). REAL room.","outside":0,"dup":0,"rccap":18,"roomctr":[3,4],"rcctr":[3,13],"corridor":[[3,4],[3,5],[3,6],[3,7],[3,8],[3,9],[3,10],[3,11],[3,12]],"color":"room","roomid":0,"cells":[[2,1],[2,2],[2,3],[3,1],[3,2],[3,3],[4,1],[4,2],[4,3]]},
+{"msg":"SUMMARY room 1: 9 cells, depth 1, parent -1, cap 9","detail":"room cap=9 (counter[3,12]), rc cap=18 (counter[3,3]). OUTSIDE - counters ~dead (huge cap).","outside":1,"dup":0,"rccap":18,"roomctr":[3,12],"rcctr":[3,3],"corridor":[[3,4],[3,5],[3,6],[3,7],[3,8],[3,9],[3,10],[3,11],[3,12]],"color":"room","roomid":1,"cells":[[2,13],[2,14],[2,15],[3,13],[3,14],[3,15],[4,13],[4,14],[4,15]]}
+]}

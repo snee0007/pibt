@@ -1,0 +1,70 @@
+<!DOCTYPE html><html><head><meta charset="utf8"><title>cut trace</title>
+<style>
+body{font-family:monospace;background:#111;color:#eee;margin:0;padding:14px;display:flex;gap:16px}
+#grid{display:grid;gap:1px;margin:10px 0}
+.cell{width:24px;height:24px;font-size:8px;display:flex;align-items:center;justify-content:center;color:#777}
+.wall{background:#222}.open{background:#3a3a3a}
+.roomA{background:#1d9e75;color:#000}
+.roomB{background:#2a6fd8;color:#fff}
+.chain{background:#d8a01f;color:#000}
+.pa{background:#00e0d0;color:#000;font-weight:bold}
+.pb{background:#e0e000;color:#000;font-weight:bold}
+.ctrA{background:#ff2d55;color:#fff;font-weight:bold;box-shadow:inset 0 0 0 2px #fff}
+.ctrB{background:#ff8c00;color:#fff;font-weight:bold;box-shadow:inset 0 0 0 2px #fff}
+button{font-size:13px;padding:6px 12px;margin:3px;background:#333;color:#eee;border:1px solid #666;cursor:pointer;border-radius:4px}
+#status{font-size:14px;margin:8px 0;font-weight:bold}
+.leg span{padding:2px 6px;margin-right:4px;font-size:11px}
+.panel{background:#1a1a1a;border:1px solid #444;padding:10px;border-radius:6px;min-width:220px}
+</style></head><body>
+<div>
+<h2 style="margin:0 0 6px">Dijkstra cut viewer</h2>
+<div class="leg">
+<span class="roomA">room A</span><span class="roomB">room B</span>
+<span class="chain">chain(door)</span><span class="pa">a</span><span class="pb">b</span>
+<span class="ctrA">counterA</span><span class="ctrB">counterB</span>
+</div>
+<div>Load JSON: <input type="file" id="file" accept=".json"></div>
+<div>
+<button onclick="prev()">◀ prev cut</button>
+<button onclick="next()">next cut ▶</button>
+<button onclick="showAll()">show all cuts</button>
+</div>
+<div id="status">load a cut json</div>
+<div id="grid"></div>
+</div>
+<div class="panel">
+<h3 style="margin-top:0;color:#9fd">CUT DETAIL</h3>
+<div id="detail" style="font-size:12px;line-height:1.7">—</div>
+</div>
+<script>
+let data=null,cellEl={},H,W,ci=0;
+document.getElementById('file').addEventListener('change',e=>{let f=e.target.files[0];if(!f)return;
+ let rd=new FileReader();rd.onload=()=>{data=JSON.parse(rd.result);H=data.H;W=data.W;build();ci=0;render();};rd.readAsText(f);});
+function build(){let g=document.getElementById('grid');g.innerHTML='';cellEl={};
+ g.style.gridTemplateColumns=`repeat(${W},25px)`;
+ for(let r=0;r<H;r++)for(let c=0;c<W;c++){let d=document.createElement('div');
+  let o=data.grid[r][c]=='.';d.className='cell '+(o?'open':'wall');d.title=`[${r},${c}]`;cellEl[r*W+c]=d;g.appendChild(d);}}
+function clr(){for(let r=0;r<H;r++)for(let c=0;c<W;c++){let o=data.grid[r][c]=='.';cellEl[r*W+c].className='cell '+(o?'open':'wall');}}
+function put(cell,cls,txt){cellEl[cell[0]*W+cell[1]].className='cell '+cls;if(txt)cellEl[cell[0]*W+cell[1]].textContent=txt;}
+function paintCut(C){
+ C.roomA.forEach(p=>put(p,'roomA'));
+ C.roomB.forEach(p=>put(p,'roomB'));
+ C.chain.forEach(p=>put(p,'chain'));
+ put(C.a,'pa','a'); put(C.b,'pb','b');
+ put(C.counterA,'ctrA','A'); put(C.counterB,'ctrB','B');
+}
+function render(){if(!data)return;clr();
+ let C=data.cuts[ci];paintCut(C);
+ document.getElementById('status').innerText=`Cut ${C.cut} / ${data.cuts.length}`;
+ document.getElementById('detail').innerHTML=
+   `<b>Cut ${C.cut}</b><br>chain: ${JSON.stringify(C.chain)}<br>`+
+   `point a = ${JSON.stringify(C.a)} (room A, ${C.sizeA} cells)<br>`+
+   `point b = ${JSON.stringify(C.b)} (room B, ${C.sizeB} cells)<br>`+
+   `counter A = ${JSON.stringify(C.counterA)}<br>counter B = ${JSON.stringify(C.counterB)}`;
+}
+function showAll(){if(!data)return;clr();data.cuts.forEach(paintCut);
+ document.getElementById('status').innerText=`ALL ${data.cuts.length} cuts`;
+ document.getElementById('detail').innerHTML='showing all cuts';}
+function next(){if(!data)return;ci=(ci+1)%data.cuts.length;render();}
+function prev(){if(!data)return;ci=(ci-1+data.cuts.length)%data.cuts.length;render();}
+</script></body></html>

@@ -1,0 +1,83 @@
+<!DOCTYPE html><html><head><meta charset="utf8"><title>corridor player</title>
+<style>
+body{font-family:monospace;background:#111;color:#eee;margin:0;padding:14px;display:flex;gap:16px}
+#left{flex:0 0 auto}#right{flex:1;min-width:240px}
+#grid{display:grid;gap:1px;margin:10px 0}
+.cell{width:22px;height:22px;font-size:7px;display:flex;align-items:center;justify-content:center;color:#666;position:relative}
+.wall{background:#222}.open{background:#3a3a3a}
+.room{background:#1d9e75;color:#000}
+.room2{background:#9b59d8;color:#fff}
+.phantom{background:#e24b4a;color:#fff}
+.corridor{background:#d8a01f;color:#000}
+.outsidecell{background:#3a4a5a;color:#88a}
+.gate{background:#ff2d55;color:#fff;font-weight:bold;box-shadow:inset 0 0 0 2px #ff0}
+button{font-size:12px;padding:5px 10px;margin:2px;background:#333;color:#eee;border:1px solid #666;cursor:pointer;border-radius:4px}
+#status{font-size:13px;margin:6px 0;font-weight:bold}
+#detail{font-size:12px;color:#ffcf6f;margin:4px 0;min-height:30px;line-height:1.4}
+.panel{background:#1a1a1a;border:1px solid #444;border-radius:6px;padding:10px;margin-bottom:12px}
+.panel h3{margin:0 0 8px;font-size:13px;color:#9fd}
+.rrow{font-size:12px;padding:3px 6px;margin:2px 0;border-radius:4px;background:#2a2a2a;cursor:pointer}
+.rrow:hover{background:#333}
+.rrow.real{border-left:4px solid #1d9e75}
+.rrow.out{opacity:0.6;border-left:4px solid #3a4a5a}
+.leg span{padding:1px 5px;margin-right:4px;font-size:10px}
+</style></head><body>
+<div id="left">
+<h2 style="margin:0 0 6px">corridor + gate viewer</h2>
+<div class="leg" style="margin:4px 0">
+<span style="background:#1d9e75;color:#000">room</span>
+<span style="background:#d8a01f;color:#000">corridor</span>
+<span style="background:#ff2d55;color:#fff;box-shadow:inset 0 0 0 2px #ff0">GATE</span>
+<span style="background:#3a4a5a;color:#abd">outside</span>
+</div>
+<div>Load JSON: <input type="file" id="file" accept=".json"></div>
+<div style="margin:6px 0">
+  <label><input type="checkbox" id="hideOutside" onchange="render()"> hide outside/giant rooms</label>
+</div>
+<div id="status">load a file</div>
+<div id="detail"></div>
+<div id="grid"></div>
+</div>
+<div id="right">
+<div class="panel"><h3>ROOMS — click to highlight</h3><div id="roomlist">—</div></div>
+<div class="panel"><h3>GATE CHECK</h3><div id="gatecheck" style="font-size:12px;line-height:1.6">—</div></div>
+</div>
+<script>
+let data=null,cellEl={},H,W,meta={};
+document.getElementById('file').addEventListener('change',e=>{let f=e.target.files[0];if(!f)return;
+ let rd=new FileReader();rd.onload=()=>{data=JSON.parse(rd.result);H=data.H;W=data.W;parse();build();render();};rd.readAsText(f);});
+function parse(){meta={};
+ data.steps.forEach(s=>{meta[s.roomid]={cells:s.cells,corridor:s.corridor||[],gate:s.gate||null,
+   outside:s.outside||0,msg:s.msg,detail:s.detail,color:s.color};});}
+function hidden(id){let m=meta[id];if(!m)return false;
+ let ho=document.getElementById('hideOutside');return ho&&ho.checked&&m.outside;}
+function build(){let g=document.getElementById('grid');g.innerHTML='';cellEl={};
+ g.style.gridTemplateColumns=`repeat(${W},23px)`;
+ for(let r=0;r<H;r++)for(let c=0;c<W;c++){let d=document.createElement('div');
+  let o=data.grid[r][c]=='.';d.className='cell '+(o?'open':'wall');d.title=`[${r},${c}]`;cellEl[r*W+c]=d;g.appendChild(d);}}
+function clearGrid(){for(let r=0;r<H;r++)for(let c=0;c<W;c++){let o=data.grid[r][c]=='.';cellEl[r*W+c].className='cell '+(o?'open':'wall');}}
+function paintRoom(id){let m=meta[id];if(!m)return;
+ m.cells.forEach(([r,c])=>cellEl[r*W+c].className='cell '+(m.outside?'outsidecell':m.color));
+ m.corridor.forEach(([r,c])=>{ if(cellEl[r*W+c].className.indexOf('room')<0) cellEl[r*W+c].className='cell corridor';});
+ if(m.gate){let[r,c]=m.gate;cellEl[r*W+c].className='cell gate';cellEl[r*W+c].textContent='G';}
+}
+function render(){if(!data)return;clearGrid();
+ // paint all non-hidden rooms
+ Object.keys(meta).forEach(id=>{if(!hidden(id))paintRoom(id);});
+ // room list
+ let html="";
+ Object.keys(meta).sort((a,b)=>a-b).forEach(id=>{let m=meta[id];if(hidden(id))return;
+   let cls=m.outside?"out":"real";
+   html+=`<div class="rrow ${cls}" onclick="focusRoom(${id})">Room ${id}: ${m.cells.length} cells + ${m.corridor.length} corridor ${m.outside?'(outside)':'(REAL)'} gate[${m.gate}]</div>`;});
+ document.getElementById('roomlist').innerHTML=html||"—";
+ // gate check - for REAL rooms, show gate position relative to room
+ let gc="";
+ Object.keys(meta).sort((a,b)=>a-b).forEach(id=>{let m=meta[id];if(m.outside||hidden(id))return;
+   gc+=`Room ${id}: corridor=${JSON.stringify(m.corridor)} → gate=${JSON.stringify(m.gate)}<br>`;});
+ document.getElementById('gatecheck').innerHTML=gc||"—";
+ document.getElementById('status').innerText=`${Object.keys(meta).length} rooms loaded`;
+}
+function focusRoom(id){clearGrid();paintRoom(id);let m=meta[id];
+ document.getElementById('status').innerText=m.msg;
+ document.getElementById('detail').innerText=m.detail||"";}
+</script></body></html>

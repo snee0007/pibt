@@ -1,0 +1,114 @@
+<!DOCTYPE html><html><head><meta charset="utf8"><title>nest + counter player</title>
+<style>
+body{font-family:monospace;background:#111;color:#eee;margin:0;padding:14px;display:flex;gap:16px}
+#left{flex:0 0 auto}#right{flex:1;min-width:240px}
+#grid{display:grid;gap:1px;margin:10px 0}
+.cell{width:20px;height:20px;font-size:7px;display:flex;align-items:center;justify-content:center;color:#666;position:relative}
+.wall{background:#222}.open{background:#3a3a3a}
+.chain{background:#d8a01f;color:#000}
+.room{background:#1d9e75;color:#000}
+.room2{background:#9b59d8;color:#fff}
+.phantom{background:#e24b4a;color:#fff}
+.corridor{background:#d8a01f;color:#000}
+.outsidecell{background:#3a4a5a;color:#88a}
+.counter{background:#ff2d55;color:#fff;font-weight:bold;box-shadow:inset 0 0 0 2px #ff0}
+button{font-size:12px;padding:5px 10px;margin:2px;background:#333;color:#eee;border:1px solid #666;cursor:pointer;border-radius:4px}
+#status{font-size:13px;margin:6px 0;font-weight:bold}
+#detail{font-size:12px;color:#ffcf6f;margin:4px 0;min-height:30px;line-height:1.4}
+.panel{background:#1a1a1a;border:1px solid #444;border-radius:6px;padding:10px;margin-bottom:12px}
+.panel h3{margin:0 0 8px;font-size:13px;color:#9fd}
+.rrow{font-size:12px;padding:3px 6px;margin:2px 0;border-radius:4px;background:#2a2a2a;cursor:pointer}
+.rrow:hover{background:#333}
+.rrow.d1{border-left:4px solid #1d9e75}
+.rrow.d2{border-left:4px solid #9b59d8}
+.rrow.d3{border-left:4px solid #e24b4a}
+.rrow.out{opacity:0.6;border-left:4px solid #3a4a5a}
+.tree{font-size:12px;line-height:1.5}
+.opt{font-size:12px;margin:6px 0}
+.tag{font-size:9px;padding:0 4px;border-radius:3px;margin-left:4px}
+.tag.o{background:#3a4a5a;color:#abd}
+.tag.d{background:#5a3a3a;color:#dab}
+</style></head><body>
+<div id="left">
+<h2 style="margin:0 0 6px">nest + counters</h2>
+<div style="font-size:10px;margin:4px 0">
+<span style="background:#1d9e75;color:#000;padding:1px 4px">room</span>
+<span style="background:#d8a01f;color:#000;padding:1px 4px">corridor</span>
+<span style="background:#ff2d55;color:#fff;padding:1px 4px;box-shadow:inset 0 0 0 2px #ff0">COUNTER</span>
+<span style="background:#3a4a5a;color:#abd;padding:1px 4px">outside</span>
+</div>
+<div>Load JSON: <input type="file" id="file" accept=".json"></div>
+<div class="opt">
+  <label><input type="checkbox" id="hideOutside" checked onchange="render()"> hide outside/giant rooms</label><br>
+  <label><input type="checkbox" id="hideDup" checked onchange="render()"> hide duplicate rooms</label>
+  <label><input type="checkbox" id="showAllCounters" onchange="render()"> show ALL counters at once</label>
+</div>
+<div id="status">load a file</div>
+<div id="detail"></div>
+<div id="grid"></div>
+</div>
+<div id="right">
+<div class="panel"><h3>ROOMS (list)</h3><div id="roomlist">—</div></div>
+<div class="panel"><h3>NESTING TREE</h3><div id="tree" class="tree">—</div></div>
+</div>
+<script>
+let data=null,cellEl={},H,W,meta={};
+document.getElementById('file').addEventListener('change',e=>{let f=e.target.files[0];if(!f)return;
+ let rd=new FileReader();rd.onload=()=>{data=JSON.parse(rd.result);H=data.H;W=data.W;parseRooms();build();render();};rd.readAsText(f);});
+function parseRooms(){meta={};
+ data.steps.forEach(s=>{
+   let mm=s.msg.match(/SUMMARY room (\d+): (\d+) cells, depth (\d+), parent (-?\d+), cap (\d+)/);
+   if(mm){meta[+mm[1]]={cells:+mm[2],depth:+mm[3],parent:+mm[4],cap:+mm[5],cellList:s.cells,
+     outside:s.outside||0,dup:s.dup||0,corridor:s.corridor||[],counter:s.counter||null,
+     rccap:s.rccap||+mm[5],detail:s.detail||""};}
+ });}
+function hidden(id){let m=meta[id];if(!m)return false;
+ let ho=document.getElementById('hideOutside'),hd=document.getElementById('hideDup');
+ if(ho&&ho.checked&&m.outside)return true;
+ if(hd&&hd.checked&&m.dup)return true;
+ return false;}
+function build(){let g=document.getElementById('grid');g.innerHTML='';cellEl={};
+ g.style.gridTemplateColumns=`repeat(${W},21px)`;
+ for(let r=0;r<H;r++)for(let c=0;c<W;c++){let d=document.createElement('div');
+  let o=data.grid[r][c]=='.';d.className='cell '+(o?'open':'wall');d.title=`[${r},${c}]`;cellEl[r*W+c]=d;g.appendChild(d);}}
+function clearGrid(){for(let r=0;r<H;r++)for(let c=0;c<W;c++){let o=data.grid[r][c]=='.';cellEl[r*W+c].className='cell '+(o?'open':'wall');}}
+function paintRoom(id,withCounter){let m=meta[id];if(!m)return;
+ let col=m.outside?"outsidecell":(m.depth==1?"room":(m.depth==2?"room2":"phantom"));
+ m.cellList.forEach(([r,c])=>cellEl[r*W+c].className='cell '+col);
+ m.corridor.forEach(([r,c])=>{ if(cellEl[r*W+c].className.indexOf('room')<0 && cellEl[r*W+c].className.indexOf('outsidecell')<0) cellEl[r*W+c].className='cell corridor';});
+ if(withCounter&&m.counter){let[r,c]=m.counter;cellEl[r*W+c].className='cell counter';cellEl[r*W+c].textContent='C';}
+}
+function render(){if(!data)return;clearGrid();
+ let showAll=document.getElementById('showAllCounters').checked;
+ if(showAll){ // paint every visible room's counter
+   Object.keys(meta).forEach(id=>{if(!hidden(id)){let m=meta[id];if(m.counter){let[r,c]=m.counter;cellEl[r*W+c].className='cell counter';cellEl[r*W+c].textContent='C';}}});
+ }
+ renderPanels();
+}
+function renderPanels(){
+ let html="";
+ Object.keys(meta).sort((a,b)=>a-b).forEach(id=>{let m=meta[id];if(hidden(id))return;
+   let dc=m.outside?"out":(m.depth==1?"d1":(m.depth==2?"d2":"d3"));
+   let tags=(m.outside?'<span class="tag o">outside</span>':'')+(m.dup?'<span class="tag d">dup</span>':'');
+   html+=`<div class="rrow ${dc}" onclick="hl(${id})">Room ${id}: ${m.cells}c &middot; rc ${m.rccap} &middot; ctr[${m.counter}]${m.parent>=0?` &middot; in R${m.parent}`:" &middot; ROOT"}${tags}</div>`;});
+ document.getElementById('roomlist').innerHTML=html||"—";
+ // tree
+ let kids={}; let roots=[];
+ Object.keys(meta).forEach(k=>{let id=+k;let m=meta[id];if(!m||hidden(id))return;
+   let p=m.parent;
+   while(p>=0 && hidden(p)) p=meta[p]?meta[p].parent:-1;
+   if(p>=0){(kids[p]=kids[p]||[]).push(id);}else roots.push(id);});
+ function line(id,ind){let m=meta[id];
+   let pad="&nbsp;&nbsp;&nbsp;&nbsp;".repeat(ind);
+   let arrow=ind?"&#9492;&#9472; ":"";
+   let dotcol=m.outside?"#3a4a5a":(m.depth==1?"#1d9e75":(m.depth==2?"#9b59d8":"#e24b4a"));
+   let s=`<div onclick="hl(${id})" style="cursor:pointer;padding:2px 0">${pad}${arrow}<span style="color:${dotcol}">&#9632;</span> Room ${id} <span style="color:#888">(${m.cells}c, rc${m.rccap})</span></div>`;
+   (kids[id]||[]).sort((a,b)=>a-b).forEach(k=>s+=line(k,ind+1));return s;}
+ let t=""; roots.sort((a,b)=>a-b).forEach(r=>t+=line(r,0));
+ document.getElementById('tree').innerHTML=t||"—";
+}
+function hl(id){let m=meta[id];if(!m)return;clearGrid();
+ paintRoom(id,true);
+ document.getElementById('status').innerText=`Room ${id}: ${m.cells} cells, rc cap ${m.rccap}, counter [${m.counter}]${m.outside?" [OUTSIDE]":""}`;
+ document.getElementById('detail').innerText=m.detail;}
+</script></body></html>
