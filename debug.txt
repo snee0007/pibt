@@ -1,0 +1,36 @@
+#!/bin/bash
+# Debug ONE failing case: generate full dump + identify the break timestep.
+# Usage: ./debug_case.sh <map> <N> <seed>
+MAP=$1; N=$2; SEED=$3
+echo "=== running $MAP N=$N seed=$SEED ==="
+./build_andy/main -v 1 -t 8 -s $SEED -m scripts/map/$MAP.map -N $N > /tmp/run_full.txt 2>&1
+cp /tmp/live_viz.txt ~/pibt/live_viz.txt
+
+# result
+if grep -q "invalid solution" /tmp/run_full.txt; then echo "RESULT: FAILED (invalid)"; 
+else echo "RESULT: $(grep -oE 'makespan: [0-9]+' /tmp/run_full.txt|head -1)"; fi
+
+# how it ended
+echo "--- how the loop ended ---"
+grep -oE "deadlock at step [0-9]+|done in [0-9]+ steps|viz cap" /tmp/run_full.txt | tail -1
+# how it ended
+# which agents are NOT at goal at the final step (the stranded ones = the problem)
+echo "--- agents NOT at goal at final step ---"
+python3 << PYEOF
+lines=open('/tmp/live_viz.txt').read().split('\n')
+goals=[]; last=None
+for ln in lines:
+    if ln.startswith('goals:'):
+        goals=[tuple(map(int,p.split(','))) for p in ln[6:].split(';') if p]
+    elif '|pos:' in ln:
+        pos=[tuple(map(int,p.split(','))) for p in ln.split('|pos:')[1].split('|pri:')[0].split(';') if p]
+        last=(int(ln.split('|')[0]),pos)
+if last:
+    sn,pos=last
+    print(f"final step={sn}, {len(pos)} agents")
+    stuck=[(i,p,goals[i]) for i,p in enumerate(pos) if i<len(goals) and p!=goals[i]]
+    print(f"stranded: {len(stuck)} agents")
+    for i,p,g in stuck[:20]: print(f"  agent {i}: at {p} goal {g}")
+PYEOF
+echo ""
+echo "=== dump saved to ~/pibt/live_viz.txt - load scripts/map/$MAP.map + live_viz.txt in viz_player.html ==="

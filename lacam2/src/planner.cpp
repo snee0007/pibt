@@ -3,7 +3,9 @@
 #include <array>
 static int g_fire_count = 0;
 static int g_fire_agent = -1;
-static int g_frozen_cap = 60;  // tunable: max frozen steps to wait while an agent is parked
+static int g_frozen_cap = 60;
+static int g_exit_boost = 0;
+static int g_park_timeout = 50;  // release a parked agent if its room won't drain within this many steps  // OFF by default (old experiment; caused swap ping-pong)  // tunable: max frozen steps to wait while an agent is parked
 
 LNode::LNode(LNode* parent, uint i, Vertex* v)
     : who(), where(), depth(parent == nullptr ? 0 : parent->depth + 1)
@@ -116,12 +118,16 @@ Solution Planner::solve(std::string& additional_info)
   std::vector<float> pri(N, 0.0f);
   bool pri_init = false;
   std::vector<int> waiting_room(N, -1);
+  std::vector<int> park_duration(N, 0);
   int frozen_count = 0;
   { const char* fc=getenv("FROZEN_CAP"); if(fc) g_frozen_cap=atoi(fc); }
+  { const char* eb=getenv("EXIT_BOOST"); if(eb) g_exit_boost=atoi(eb); }
+  { const char* pt=getenv("PARK_TIMEOUT"); if(pt) g_park_timeout=atoi(pt); }
   std::vector<float> orig_pri(N, 0.0f);
 
   while (!is_expired(deadline)) {
     loop_cnt++;
+    if (loop_cnt > 2000) break;   // uniform step cap (all builds): >2000 steps = degenerate = failure
 
     bool all_done = true;
     for (uint i = 0; i < N; ++i) {
@@ -212,7 +218,7 @@ Solution Planner::solve(std::string& additional_info)
         if (cur_room < 0 && !at_entrance)
           needs_exit[kk] = false;
         else
-          H->priorities[kk] = 999.0f + H->priorities[kk];
+          if (g_exit_boost) H->priorities[kk] = 999.0f + H->priorities[kk];
       }
       // Room full -> block entry
 #ifdef USE_ANDY
@@ -367,7 +373,7 @@ Solution Planner::solve(std::string& additional_info)
       vdump<<"|fires:"<<g_fire_count<<";agent:"<<g_fire_agent;
       g_fire_count=0; g_fire_agent=-1;
       vdump<<"\n"; vdump.flush();
-      if(loop_cnt>300){ solver_info(1,"viz cap"); break; }
+      // DISABLED viz cap (was artificially failing full cases): if(loop_cnt>300){ solver_info(1,"viz cap"); break; }
     }
 #endif
 
