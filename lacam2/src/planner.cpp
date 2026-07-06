@@ -614,6 +614,9 @@ void Planner::detect_rooms(int width, int height)
   // group thin cells into chains, andy method
   std::vector<std::set<int>> roomsets;
   std::vector<int> roomOutside;  // 1 = giant/outside side (don't gate entry)
+  std::vector<std::set<int>> roomChain;  // corridor chain per room
+  std::vector<int> roomCtrCell;          // ROOM counter cell (near door)
+  std::vector<int> rcCtrCell;            // RC counter cell (corridor mouth)
   std::set<int> seent;
   for(int s : thin){
     if(seent.count(s)) continue;
@@ -638,10 +641,21 @@ void Planner::detect_rooms(int width, int height)
       if(aOut&&!bOut) realIsA=0;        // ra touches outside -> rb real
       else if(bOut&&!aOut) realIsA=1;   // rb touches outside -> ra real
       else realIsA=(ra.size()<=rb.size())?1:0;  // neither/both -> smaller real
+      // chain cell adjacent to an endpoint (one step into the corridor)
+      auto chainNext=[&](int pt)->int{
+        for(auto* nb:V[pt]->neighbor){int y=(int)nb->id; if(chset.count(y))return y;}
+        return pt; };
+      // counters (verified rule):
+      //   ROOM counter = chain cell next to the room's own endpoint (near its door)
+      //   RC counter   = the OPPOSITE endpoint (far side / corridor mouth)
       if(realIsA){ roomsets.push_back(ra); roomOutside.push_back(0);
-                   roomsets.push_back(rb); roomOutside.push_back(1); }
+                     roomChain.push_back(chset); roomCtrCell.push_back(chainNext(a)); rcCtrCell.push_back(b);
+                   roomsets.push_back(rb); roomOutside.push_back(1);
+                     roomChain.push_back(chset); roomCtrCell.push_back(chainNext(b)); rcCtrCell.push_back(a); }
       else { roomsets.push_back(rb); roomOutside.push_back(0);
-             roomsets.push_back(ra); roomOutside.push_back(1); } }
+               roomChain.push_back(chset); roomCtrCell.push_back(chainNext(b)); rcCtrCell.push_back(a);
+             roomsets.push_back(ra); roomOutside.push_back(1);
+               roomChain.push_back(chset); roomCtrCell.push_back(chainNext(a)); rcCtrCell.push_back(b); } }
   }
 
   int R=(int)roomsets.size();
@@ -692,6 +706,11 @@ void Planner::detect_rooms(int width, int height)
     }
     room.capacity = (int)roomsets[i].size();
     room.current_count = 0;
+    for(int cid:roomChain[i]) room.corridor_cells.push_back(cid);
+    room.room_counter = roomCtrCell[i];
+    room.rc_counter = rcCtrCell[i];
+    room.rc_capacity = room.capacity + (int)room.corridor_cells.size();
+    room.rc_count = 0;
     room.depth = depth[i];
     room.is_combined = combined[i];
     room.parent = parent[i];
@@ -709,7 +728,10 @@ void Planner::detect_rooms(int width, int height)
   for(auto& r : rooms)
     std::cout << "[ROOM]   Room " << r.id << ": " << r.cells.size()
               << " cells, depth=" << r.depth << ", parent=" << r.parent
-              << ", cap=" << r.capacity << (r.is_combined?" [COMBINED]":"") << (r.outside?" [OUTSIDE]":"") << "\n";
+              << ", cap=" << r.capacity << ", rccap=" << r.rc_capacity
+              << ", Rctr[" << rc(r.room_counter).first << "," << rc(r.room_counter).second << "]"
+              << ", RCctr[" << rc(r.rc_counter).first << "," << rc(r.rc_counter).second << "]"
+              << (r.is_combined?" [COMBINED]":"") << (r.outside?" [OUTSIDE]":"") << "\n";
   // dump rooms to file for the visualizer (x,y per cell)
   {
     std::ofstream rf("rooms.txt", std::ios::out);

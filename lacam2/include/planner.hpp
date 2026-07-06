@@ -22,11 +22,15 @@ struct RoomInfo {
   int capacity;                     // max agents allowed in room+corridor
   int current_count;                // agents in room+corridor right now
   int num_doors;                    // number of entrance/door cells
+  int room_counter;                 // vertex id: ROOM counter cell (near door)
+  int rc_counter;                   // vertex id: RC counter cell (corridor mouth)
+  int rc_capacity;                  // room + corridor cell count
+  int rc_count;                     // agents in room + corridor right now
   int depth;                        // nesting depth (1=outermost)
   bool is_combined;                 // true = overlap counter, not a parent
   int parent;                       // id of containing room, -1 if root
   int outside;                      // 1 = giant/outside side, never gates entry
-  RoomInfo(int _id) : id(_id), capacity(0), current_count(0), num_doors(0), depth(1), is_combined(false), parent(-1), outside(0) {}
+  RoomInfo(int _id) : id(_id), capacity(0), current_count(0), num_doors(0), room_counter(-1), rc_counter(-1), rc_capacity(0), rc_count(0), depth(1), is_combined(false), parent(-1), outside(0) {}
 };
 
 // PIBT agent
