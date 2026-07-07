@@ -792,21 +792,37 @@ int Planner::full_room_to_enter(Agent* ai)
   //   goal inside the room  -> heading in  -> gate applies
   //   goal in corridor      -> allowed (corridor-goal exception)
   //   goal elsewhere        -> exiting/passing -> never gate
+#ifdef NO_PART2
+  // ===== B2 ONLY (NO_PART2): original corridor-entry gate, 15/1 =====
+  int goal_id = (int)ins->goals[ai->id]->id;
+  for (auto* nb : ai->v_now->neighbor) {
+    int rid = corridor_to_room[nb->id];
+    if (rid < 0) continue;
+    if (corridor_to_room[ai->v_now->id] == rid) continue;
+    if (rooms[rid].is_combined) continue;
+    bool goal_in_room = false;
+    for (int g : cell_to_rooms[goal_id]) if (g == rid) { goal_in_room = true; break; }
+    if (!goal_in_room) continue;
+    if (rooms[rid].current_count >= rooms[rid].capacity) {
+      g_fire_count++; g_fire_agent = (int)ai->id;
+      std::cout << "[ADMIT] agent " << (int)ai->id << " at " << ai->v_now->id
+                << " BLOCKED entering corridor of room " << rid << " ("
+                << rooms[rid].current_count << "/" << rooms[rid].capacity << ")\n";
+      return rid; }
+  }
+  return -1;
+#else
   int goal_id = (int)ins->goals[ai->id]->id;
   int cur = ai->v_now->id;
   for (auto* nb : ai->v_now->neighbor) {
     int ncell = nb->id;
-
-    // ================= B3: RC gate (corridor mouth, the MAIN gate) =================
-    // Fires when the agent's next move ENTERS a corridor (and it isn't already in it).
+    // ===== B3: RC gate (corridor mouth) =====
     {
-      int rid = corridor_to_room[ncell];              // real room this corridor leads to
-      if (rid >= 0 && corridor_to_room[cur] != rid    // entering the corridor now
-          && !rooms[rid].is_combined) {
+      int rid = corridor_to_room[ncell];
+      if (rid >= 0 && corridor_to_room[cur] != rid && !rooms[rid].is_combined) {
         bool goal_in_corridor = (corridor_to_room[goal_id] == rid);
         bool room_full = rooms[rid].current_count >= rooms[rid].capacity;
         bool rc_full   = rooms[rid].rc_count      >= rooms[rid].rc_capacity;
-        // (1) room full AND not just parking in the corridor, or (2) room+corridor full
         if ((room_full && !goal_in_corridor) || rc_full) {
           g_fire_count++; g_fire_agent = (int)ai->id;
           std::cout << "[ADMIT] agent " << (int)ai->id << " at " << cur
@@ -817,10 +833,7 @@ int Planner::full_room_to_enter(Agent* ai)
         }
       }
     }
-
-    // ================= B2: ROOM gate (room door) =================
-    // Fires when the agent's next move ENTERS a room cell of a FULL room
-    // (and it isn't already in that room).
+    // ===== B2: ROOM gate (room door) =====
     for (int rid : cell_to_rooms[ncell]) {
       if (rid < 0) continue;
       if (rooms[rid].is_combined || rooms[rid].outside) continue;
@@ -837,6 +850,7 @@ int Planner::full_room_to_enter(Agent* ai)
     }
   }
   return -1;
+#endif
 #else
   int current_room = cell_to_room[ai->v_now->id];
   if (current_room >= 0) return -1;
